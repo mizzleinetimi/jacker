@@ -59,6 +59,30 @@ enum ModelDownloadStatus: Equatable {
     }
 }
 
+/// Log entry for download events
+struct DownloadLogEntry: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let message: String
+    let type: LogType
+    
+    enum LogType {
+        case info
+        case success
+        case error
+        case progress
+    }
+    
+    var icon: String {
+        switch type {
+        case .info: return "info.circle"
+        case .success: return "checkmark.circle.fill"
+        case .error: return "xmark.circle.fill"
+        case .progress: return "arrow.down.circle"
+        }
+    }
+}
+
 /// Manages downloading and storing ML models at runtime
 @MainActor
 final class ModelDownloadManager: NSObject, ObservableObject {
@@ -66,15 +90,54 @@ final class ModelDownloadManager: NSObject, ObservableObject {
     @Published var downloadStatus: ModelDownloadStatus = .notStarted
     @Published var downloadSpeed: Double = 0.0 // MB/s
     @Published var estimatedTimeRemaining: TimeInterval = 0
+    @Published var downloadLogs: [DownloadLogEntry] = []
+    @Published var currentDownloadingModel: ModelIdentifier?
     
     // MARK: - Private Properties
     private var downloadTask: URLSessionDownloadTask?
     private var downloadStartTime: Date?
     private var lastProgressUpdate: Date?
     private var lastBytesDownloaded: Int64 = 0
+    private var lastLoggedProgress: Int = -1 // Track last logged percentage to avoid spam
+    private var resumeData: Data? // Store resume data for interrupted downloads
+    private var currentModelIdentifier: ModelIdentifier? // Track which model we're downloading
+    private var urlSession: URLSession?
+    private var autoRetryCount: Int = 0
+    private let maxAutoRetries: Int = 5 // Auto-retry up to 5 times on timeout
     
     // MARK: - Singleton
     static let shared = ModelDownloadManager()
+    
+    private override init() {
+        super.init()
+        setupBackgroundSession()
+    }
+    
+    private func setupBackgroundSession() {
+        let config = URLSessionConfiguration.background(withIdentifier: "com.pic2pdf.modeldownload")
+        config.isDiscretionary = false // Don't let system delay the download
+        config.sessionSendsLaunchEvents = true // Wake app when download completes
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 14400 // 4 hours
+        config.waitsForConnectivity = true
+        config.allowsCellularAccess = true
+        urlSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }
+    
+    // MARK: - Logging
+    func addLog(_ message: String, type: DownloadLogEntry.LogType = .info) {
+        let entry = DownloadLogEntry(timestamp: Date(), message: message, type: type)
+        downloadLogs.append(entry)
+        // Keep only last 100 logs
+        if downloadLogs.count > 100 {
+            downloadLogs.removeFirst()
+        }
+        NSLog("[ModelDownload] \(message)")
+    }
+    
+    func clearLogs() {
+        downloadLogs.removeAll()
+    }
     
     // MARK: - Model Storage
     private var modelsDirectory: URL {
@@ -115,6 +178,7 @@ final class ModelDownloadManager: NSObject, ObservableObject {
         
         // Check if already downloaded
         if isModelDownloaded(identifier) {
+            addLog("Model \(identifier.displayName) already downloaded", type: .success)
             downloadStatus = .completed
             return
         }
@@ -122,25 +186,75 @@ final class ModelDownloadManager: NSObject, ObservableObject {
         // Check available disk space
         let requiredSpace = Int64(config.expectedSizeMB * 1024 * 1024)
         if !hasEnoughDiskSpace(requiredBytes: requiredSpace) {
+            addLog("Insufficient disk space. Need \(Int(config.expectedSizeMB)) MB", type: .error)
             throw ModelDownloadError.insufficientDiskSpace(requiredMB: config.expectedSizeMB)
         }
         
+        // Cancel any existing continuation to prevent leaks
+        if let existingContinuation = downloadContinuation {
+            addLog("Cancelling previous download", type: .info)
+            existingContinuation.resume(throwing: ModelDownloadError.downloadFailed("Download cancelled - new download started"))
+            downloadContinuation = nil
+        }
+        
+        currentDownloadingModel = identifier
         downloadStatus = .downloading(progress: 0, bytesDownloaded: 0, totalBytes: Int64(config.expectedSizeMB * 1024 * 1024))
         downloadStartTime = Date()
         lastProgressUpdate = Date()
         lastBytesDownloaded = 0
+        lastLoggedProgress = -1
         
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        currentModelIdentifier = identifier
+        
+        addLog("Starting download: \(identifier.displayName)", type: .info)
+        addLog("URL: \(config.downloadURL.absoluteString)", type: .info)
+        addLog("Expected size: \(String(format: "%.1f", config.expectedSizeMB)) MB", type: .info)
+        
+        // Reset auto-retry count for new downloads (not resumes)
+        if resumeData == nil {
+            autoRetryCount = 0
+        }
+        
+        // Ensure background session is set up
+        if urlSession == nil {
+            setupBackgroundSession()
+        }
+        
+        addLog("Using background session for reliable download...", type: .info)
         
         return try await withCheckedThrowingContinuation { continuation in
-            let task = session.downloadTask(with: config.downloadURL)
-            downloadTask = task
-            
             // Store continuation for completion callback
             self.downloadContinuation = continuation
             
+            let task: URLSessionDownloadTask
+            
+            // Check if we have resume data from a previous interrupted download
+            if let resumeData = self.resumeData {
+                addLog("Resuming previous download...", type: .info)
+                task = urlSession!.downloadTask(withResumeData: resumeData)
+                self.resumeData = nil
+            } else {
+                task = urlSession!.downloadTask(with: config.downloadURL)
+            }
+            
+            downloadTask = task
+            
+            self.addLog("Download task created, starting...", type: .progress)
             task.resume()
         }
+    }
+    
+    /// Resume a failed download if resume data is available
+    func canResumeDownload() -> Bool {
+        return resumeData != nil && currentModelIdentifier != nil
+    }
+    
+    /// Retry/resume the last failed download
+    func retryDownload() async throws {
+        guard let identifier = currentModelIdentifier else {
+            throw ModelDownloadError.downloadFailed("No previous download to retry")
+        }
+        try await downloadModel(identifier)
     }
     
     /// Cancel ongoing download
@@ -208,6 +322,7 @@ extension ModelDownloadManager: URLSessionDownloadDelegate {
               let identifier = DownloadableModelConfig.availableModels.first(where: { $0.value.downloadURL == originalURL })?.key else {
             NSLog("[ModelDownload] ERROR: Unknown model")
             Task { @MainActor in
+                self.addLog("Error: Unknown model URL", type: .error)
                 self.downloadStatus = .failed(error: "Unknown model")
                 self.downloadContinuation?.resume(throwing: ModelDownloadError.unknownModel)
                 self.downloadContinuation = nil
@@ -225,8 +340,9 @@ extension ModelDownloadManager: URLSessionDownloadDelegate {
             let modelsDir = destination.deletingLastPathComponent()
             try? FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
             
-            NSLog("[ModelDownload] Copying from: \(location.path)")
-            NSLog("[ModelDownload] Copying to: \(destination.path)")
+            Task { @MainActor in
+                self.addLog("Download complete, copying to storage...", type: .progress)
+            }
             
             // Remove existing file if present
             if FileManager.default.fileExists(atPath: destination.path) {
@@ -235,28 +351,39 @@ extension ModelDownloadManager: URLSessionDownloadDelegate {
             
             // Get file size
             let attributes = try FileManager.default.attributesOfItem(atPath: location.path)
+            var fileSizeMB: Double = 0
             if let fileSize = attributes[.size] as? Int64 {
-                NSLog("[ModelDownload] File size: \(fileSize) bytes (\(Double(fileSize)/(1024*1024)) MB)")
+                fileSizeMB = Double(fileSize) / (1024 * 1024)
+                NSLog("[ModelDownload] File size: \(fileSize) bytes (\(fileSizeMB) MB)")
             }
             
             // Copy file IMMEDIATELY
             try FileManager.default.copyItem(at: location, to: destination)
-            NSLog("[ModelDownload] Copy successful to: \(destination.path)")
             
-            // Update UI on main actor
+            ModelArtifactPrewarmer.prewarmArtifactsIfNeeded(for: identifier, sourceURL: destination)
+            
+            // Update UI on main actor and initialize the model
             Task { @MainActor in
+                self.addLog("Model saved: \(String(format: "%.1f", fileSizeMB)) MB", type: .success)
+                self.addLog("✅ \(identifier.displayName) ready to use!", type: .success)
                 self.downloadStatus = .completed
+                self.currentDownloadingModel = nil
                 self.downloadContinuation?.resume()
                 self.downloadContinuation = nil
-                NSLog("[ModelDownload] Model \(identifier.displayName) downloaded successfully")
+                
+                // Auto-initialize the LLM service with the newly downloaded model
+                self.addLog("Initializing AI model...", type: .info)
+                await OnDeviceLLMService.shared.initializeModel()
+                self.addLog("AI model initialized and ready!", type: .success)
             }
             
         } catch {
             NSLog("[ModelDownload] ERROR: \(error)")
-            NSLog("[ModelDownload] Error details: \(error.localizedDescription)")
             
             Task { @MainActor in
+                self.addLog("Error saving model: \(error.localizedDescription)", type: .error)
                 self.downloadStatus = .failed(error: error.localizedDescription)
+                self.currentDownloadingModel = nil
                 self.downloadContinuation?.resume(throwing: error)
                 self.downloadContinuation = nil
             }
@@ -266,28 +393,110 @@ extension ModelDownloadManager: URLSessionDownloadDelegate {
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         Task { @MainActor in
             let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+            let progressPercent = Int(progress * 100)
+            
             downloadStatus = .downloading(progress: progress, bytesDownloaded: totalBytesWritten, totalBytes: totalBytesExpectedToWrite)
             
             calculateDownloadSpeed(bytesDownloaded: totalBytesWritten)
             calculateEstimatedTime(bytesDownloaded: totalBytesWritten, totalBytes: totalBytesExpectedToWrite)
+            
+            // Log progress at 10% intervals
+            let logInterval = progressPercent / 10 * 10
+            if logInterval > lastLoggedProgress && logInterval > 0 {
+                lastLoggedProgress = logInterval
+                let downloadedMB = Double(totalBytesWritten) / (1024 * 1024)
+                let totalMB = Double(totalBytesExpectedToWrite) / (1024 * 1024)
+                addLog("\(logInterval)% - \(String(format: "%.0f", downloadedMB))/\(String(format: "%.0f", totalMB)) MB", type: .progress)
+            }
         }
     }
     
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         Task { @MainActor in
             if let error = error {
-                NSLog("[ModelDownload] Download failed with error: \(error)")
-                NSLog("[ModelDownload] Error code: \((error as NSError).code)")
+                let nsError = error as NSError
                 
-                if (error as NSError).code == NSURLErrorCancelled {
+                // Try to extract resume data for later retry
+                if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+                    self.resumeData = resumeData
+                    addLog("Download interrupted - resume data saved (\(resumeData.count / 1024) KB)", type: .info)
+                }
+                
+                if nsError.code == NSURLErrorCancelled {
+                    addLog("Download cancelled by user", type: .info)
                     downloadStatus = .cancelled
                     downloadContinuation?.resume(throwing: error)
+                    currentDownloadingModel = nil
+                    downloadContinuation = nil
+                } else if nsError.code == -1001 && self.resumeData != nil && self.autoRetryCount < self.maxAutoRetries {
+                    // Timeout with resume data available - auto retry!
+                    self.autoRetryCount += 1
+                    addLog("⏱️ Timeout detected, auto-resuming... (attempt \(self.autoRetryCount)/\(self.maxAutoRetries))", type: .info)
+                    
+                    // Small delay before retry
+                    try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                    
+                    // Auto-resume the download
+                    if let identifier = self.currentModelIdentifier {
+                        do {
+                            // Don't clear the continuation - we're continuing the same download
+                            let task = self.urlSession!.downloadTask(withResumeData: self.resumeData!)
+                            self.resumeData = nil
+                            self.downloadTask = task
+                            self.addLog("Resuming download...", type: .progress)
+                            task.resume()
+                            // Don't resume continuation yet - wait for completion
+                            return
+                        } catch {
+                            addLog("Auto-resume failed: \(error.localizedDescription)", type: .error)
+                        }
+                    }
+                    
+                    // If auto-resume setup failed, fall through to normal error handling
+                    downloadStatus = .failed(error: "Auto-resume failed")
+                    downloadContinuation?.resume(throwing: error)
+                    currentDownloadingModel = nil
+                    downloadContinuation = nil
                 } else {
+                    addLog("Download failed: \(error.localizedDescription)", type: .error)
+                    addLog("Error code: \(nsError.code)", type: .error)
+                    
+                    // Provide more helpful error messages
+                    if nsError.code == -1001 {
+                        if self.autoRetryCount >= self.maxAutoRetries {
+                            addLog("Max auto-retries reached. Tap 'Retry' to continue manually.", type: .info)
+                        } else {
+                            addLog("Tip: Tap 'Retry' to resume from where it stopped", type: .info)
+                        }
+                    }
+                    
                     downloadStatus = .failed(error: error.localizedDescription)
                     downloadContinuation?.resume(throwing: error)
+                    currentDownloadingModel = nil
+                    downloadContinuation = nil
                 }
+            }
+        }
+    }
+    
+    nonisolated func urlSession(_ session: URLSession, didBecomeInvalidWithError error: Error?) {
+        Task { @MainActor in
+            if let error = error {
+                addLog("Session error: \(error.localizedDescription)", type: .error)
+                downloadStatus = .failed(error: error.localizedDescription)
+                currentDownloadingModel = nil
+                downloadContinuation?.resume(throwing: error)
                 downloadContinuation = nil
             }
+            // Recreate the session
+            setupBackgroundSession()
+        }
+    }
+    
+    // Handle background session events (called when app wakes up)
+    nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        Task { @MainActor in
+            addLog("Background session events completed", type: .info)
         }
     }
 }

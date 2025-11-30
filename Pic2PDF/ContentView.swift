@@ -26,26 +26,33 @@ struct ContentView: View {
                     }
                     .tag(0)
 
+                // Chat Tab
+                ChatView()
+                    .tabItem {
+                        Label("Chat", systemImage: "bubble.left.and.bubble.right")
+                    }
+                    .tag(1)
+
                 // History Tab
                 NavigationView { HistoryView() }
                     .tabItem {
                         Label("History", systemImage: "clock.arrow.circlepath")
                     }
-                    .tag(1)
+                    .tag(2)
 
                 // Stats & Analytics Tab
                 StatsView()
                     .tabItem {
                         Label("Analytics", systemImage: "chart.bar.fill")
                     }
-                    .tag(2)
+                    .tag(3)
                 
                 // Settings Tab
                 SettingsView()
                     .tabItem {
                         Label("Settings", systemImage: "gearshape")
                     }
-                    .tag(3)
+                    .tag(4)
             }
             
             // Full-screen generation overlay (hides tabs)
@@ -573,147 +580,184 @@ struct RefinementView: View {
 struct GenerationOverlayView: View {
     @ObservedObject var status: GenerationStatus
     @StateObject private var llmService = OnDeviceLLMService.shared
+    @State private var elapsedTime: TimeInterval = 0
+    @State private var timer: Timer?
+    @State private var startTime = Date()
     
     var body: some View {
         ZStack {
-            // Background gradient matching app theme
-            LinearGradient(
-                colors: [Color(red: 0.05, green: 0.1, blue: 0.2), Color(red: 0.1, green: 0.2, blue: 0.35)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            // Background with blur
+            Color.black.opacity(0.85)
+                .ignoresSafeArea()
+                .background(.ultraThinMaterial)
             
-            VStack(spacing: 0) {
-                Spacer()
-                
-                // Main generation view
-                ScrollView {
-                    VStack(spacing: 24) {
-                        // Title with glow effect
-                        VStack(spacing: 12) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.white.opacity(0.15))
-                                    .frame(width: 120, height: 120)
-                                    .blur(radius: 20)
-                                
-                                Image(systemName: "brain.head.profile")
-                                    .font(.system(size: 60))
-                                    .foregroundColor(.white)
-                            }
-                            
-                            Text("AI Generation in Progress")
-                                .font(.title2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
-                            
-                            Text("Powered by on-device AI on ARM64")
-                                .font(.caption)
-                                .foregroundColor(.white.opacity(0.7))
-                        }
-                        .padding(.top, 20)
-                        
-                        // Real-time metrics while generating
-                        HStack(spacing: 16) {
-                            MetricMiniCard(
-                                icon: "memorychip",
-                                value: String(format: "%.0f", llmService.currentMemoryUsage),
-                                unit: "MB"
-                            )
-                            
-                            MetricMiniCard(
-                                icon: "speedometer",
-                                value: String(format: "%.1f", llmService.cpuUsage),
-                                unit: "%"
-                            )
-                            
-                            MetricMiniCard(
-                                icon: "chart.line.uptrend.xyaxis",
-                                value: llmService.currentTokensPerSecond > 0 ? String(format: "%.1f", llmService.currentTokensPerSecond) : "...",
-                                unit: "tok/s"
-                            )
-                        }
-                        .padding(.horizontal)
-                        
-                        // Mini sparkline charts
-                        VStack(spacing: 12) {
-                            HStack {
-                                Image(systemName: "chart.xyaxis.line")
-                                    .foregroundColor(.white.opacity(0.7))
-                                Text("RAM Usage")
-                                    .font(.caption)
-                                    .foregroundColor(.white)
-                                Spacer()
-                                Text("\(Int(llmService.currentMemoryUsage)) MB")
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(.white)
-                            }
-                            
-                            if !llmService.realtimeMemoryHistory.isEmpty {
-                                MiniSparklineView(
-                                    values: llmService.realtimeMemoryHistory,
-                                    color: .white.opacity(0.5)
-                                )
-                                .frame(height: 40)
-                            } else {
-                                // Placeholder when no data yet
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.1))
-                                    .frame(height: 40)
-                            }
-                        }
-                        .padding()
-                        .background(Color.white.opacity(0.1))
-                        .cornerRadius(12)
-                        .padding(.horizontal)
-                        
-                        // Streaming LaTeX Code View
-                        if !llmService.streamingLaTeX.isEmpty {
-                            StreamingLaTeXView(latexCode: llmService.streamingLaTeX)
-                                .frame(height: 220)
-                                .padding(.horizontal)
-                        }
-                        
-                        // Status message and progress
-                        VStack(spacing: 16) {
-                            Text(status.statusMessage)
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .multilineTextAlignment(.center)
-                            
-                            ProgressView(value: status.progress, total: 1.0)
-                                .progressViewStyle(LinearProgressViewStyle())
-                                .tint(.white)
-                                .scaleEffect(x: 1, y: 2, anchor: .center)
-                            
-                            Text("\(Int(status.progress * 100))% Complete")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                                .foregroundColor(.white.opacity(0.9))
-                        }
-                        .padding(.horizontal, 40)
-                        .padding(.bottom, 20)
-                        
-                        // Info message about stopping generation
-                        HStack(spacing: 6) {
-                            Image(systemName: "info.circle.fill")
-                                .font(.caption)
-                            Text("To stop generation, quit the app")
-                                .font(.caption)
-                        }
-                        .foregroundColor(.white.opacity(0.6))
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
-                        .background(Color.white.opacity(0.1))
-                        .cornerRadius(8)
+            VStack(spacing: 20) {
+                // Header
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Generating LaTeX")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                        Text("On-device AI • 100% Private")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.6))
                     }
+                    Spacer()
+                    // Elapsed time
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(formatElapsedTime(elapsedTime))
+                            .font(.system(.title3, design: .monospaced))
+                            .fontWeight(.semibold)
+                            .foregroundColor(.white)
+                        Text("elapsed")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 60)
+                
+                // Main progress ring
+                ZStack {
+                    // Background ring
+                    Circle()
+                        .stroke(Color.white.opacity(0.1), lineWidth: 12)
+                        .frame(width: 140, height: 140)
+                    
+                    // Progress ring
+                    Circle()
+                        .trim(from: 0, to: status.progress)
+                        .stroke(
+                            LinearGradient(colors: [.blue, .cyan], startPoint: .topLeading, endPoint: .bottomTrailing),
+                            style: StrokeStyle(lineWidth: 12, lineCap: .round)
+                        )
+                        .frame(width: 140, height: 140)
+                        .rotationEffect(.degrees(-90))
+                        .animation(.easeInOut(duration: 0.3), value: status.progress)
+                    
+                    // Center content
+                    VStack(spacing: 4) {
+                        Text("\(Int(status.progress * 100))%")
+                            .font(.system(size: 36, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                        
+                        if llmService.currentTokensPerSecond > 0 {
+                            Text("\(String(format: "%.1f", llmService.currentTokensPerSecond)) tok/s")
+                                .font(.caption)
+                                .foregroundColor(.cyan)
+                        }
+                    }
+                }
+                .padding(.vertical, 20)
+                
+                // Status message
+                Text(status.statusMessage)
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+                
+                // Live metrics row
+                HStack(spacing: 24) {
+                    MetricPill(icon: "memorychip", value: "\(Int(llmService.currentMemoryUsage))", unit: "MB", color: .green)
+                    MetricPill(icon: "character.cursor.ibeam", value: "\(llmService.streamingLaTeX.count)", unit: "chars", color: .orange)
+                }
+                .padding(.horizontal)
+                
+                // Streaming output preview
+                if !llmService.streamingLaTeX.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "doc.text")
+                                .foregroundColor(.cyan)
+                            Text("Live Output")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.white.opacity(0.7))
+                            Spacer()
+                            Text("\(llmService.streamingLaTeX.count) characters")
+                                .font(.caption2)
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                        
+                        ScrollView {
+                            Text(llmService.streamingLaTeX.suffix(500))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundColor(.green.opacity(0.9))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(height: 120)
+                    }
+                    .padding()
+                    .background(Color.black.opacity(0.5))
+                    .cornerRadius(12)
+                    .padding(.horizontal)
                 }
                 
                 Spacer()
+                
+                // Bottom tip
+                HStack(spacing: 8) {
+                    Image(systemName: "lightbulb.fill")
+                        .foregroundColor(.yellow)
+                    Text("Tip: Enable Performance Mode in Settings for faster generation")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                .padding()
+                .background(Color.white.opacity(0.05))
+                .cornerRadius(10)
+                .padding(.horizontal)
+                .padding(.bottom, 40)
             }
         }
+        .onAppear {
+            startTime = Date()
+            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+                elapsedTime = Date().timeIntervalSince(startTime)
+            }
+        }
+        .onDisappear {
+            timer?.invalidate()
+        }
+    }
+    
+    private func formatElapsedTime(_ time: TimeInterval) -> String {
+        let minutes = Int(time) / 60
+        let seconds = Int(time) % 60
+        let tenths = Int((time.truncatingRemainder(dividingBy: 1)) * 10)
+        if minutes > 0 {
+            return String(format: "%d:%02d.%d", minutes, seconds, tenths)
+        }
+        return String(format: "%d.%d", seconds, tenths)
+    }
+}
+
+// Compact metric pill for the overlay
+struct MetricPill: View {
+    let icon: String
+    let value: String
+    let unit: String
+    let color: Color
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundColor(color)
+            Text(value)
+                .font(.system(.subheadline, design: .monospaced))
+                .fontWeight(.semibold)
+                .foregroundColor(.white)
+            Text(unit)
+                .font(.caption2)
+                .foregroundColor(.white.opacity(0.5))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.1))
+        .cornerRadius(20)
     }
 }
 

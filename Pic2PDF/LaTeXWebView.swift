@@ -16,12 +16,11 @@ struct LaTeXWebView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.preferences.javaScriptEnabled = true
         let controller = WKUserContentController()
         controller.add(context.coordinator, name: "jsLog")
         controller.add(context.coordinator, name: "renderStatus")
-        config.userContentController = controller
+        let config = LaTeXWebEnvironment.shared.makeConfiguration(userContentController: controller)
+        config.preferences.javaScriptEnabled = true
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         print("[LaTeXWebView] makeUIView, latex length=\(latex.count)")
@@ -66,6 +65,7 @@ struct LaTeXWebView: UIViewRepresentable {
                 .replacingOccurrences(of: "\n", with: "\\n")
                 .replacingOccurrences(of: "\"", with: "\\\"")
 
+            let env = LaTeXWebEnvironment.shared
             let html = """
             <!DOCTYPE html>
             <html>
@@ -75,7 +75,8 @@ struct LaTeXWebView: UIViewRepresentable {
                 <style>
                   body { margin: 12px; background: #fff; }
                 </style>
-                <script src=\"https://cdn.jsdelivr.net/npm/latex.js/dist/latex.js\"></script>
+                \(env.styleTag)
+                \(env.scriptTag)
               </head>
               <body>
                 <script>
@@ -84,10 +85,7 @@ struct LaTeXWebView: UIViewRepresentable {
                       const src = "\(escaped)";
                       const generator = new latexjs.HtmlGenerator({ hyphenate: false });
                       latexjs.parse(src, { generator: generator });
-                      
-                      // Inject styles and scripts using the LaTeX.js base URL
-                      document.head.appendChild(generator.stylesAndScripts("https://cdn.jsdelivr.net/npm/latex.js/dist/"));
-                      
+
                       // Append the generated HTML
                       document.body.appendChild(generator.domFragment());
                     } catch (e) {
@@ -103,7 +101,7 @@ struct LaTeXWebView: UIViewRepresentable {
             print(html)
             print("[LaTeXWebView] ========== INJECTED HTML END ==========")
 
-            webView.loadHTMLString(html, baseURL: nil)
+            webView.loadHTMLString(html, baseURL: env.baseURL)
         }
         
         private func stripUnsupportedLaTeX(_ latex: String) -> String {

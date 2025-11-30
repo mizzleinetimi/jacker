@@ -36,7 +36,7 @@ class WebViewPDFRenderer: NSObject, WKNavigationDelegate {
     override init() {
         super.init()
         
-        let config = WKWebViewConfiguration()
+        let config = LaTeXWebEnvironment.shared.makeConfiguration()
         config.preferences.javaScriptEnabled = true
         
         // Create webview with reasonable size for PDF rendering
@@ -54,7 +54,7 @@ class WebViewPDFRenderer: NSObject, WKNavigationDelegate {
         }
         
         let html = makeHTMLDocument(latex: latex)
-        webView.loadHTMLString(html, baseURL: nil)
+        webView.loadHTMLString(html, baseURL: LaTeXWebEnvironment.shared.baseURL)
     }
     
     private func makeHTMLDocument(latex: String) -> String {
@@ -71,6 +71,7 @@ class WebViewPDFRenderer: NSObject, WKNavigationDelegate {
             .replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\"", with: "\\\"")
         
+        let env = LaTeXWebEnvironment.shared
         let html = """
         <!DOCTYPE html>
         <html>
@@ -93,7 +94,8 @@ class WebViewPDFRenderer: NSObject, WKNavigationDelegate {
                 border-radius: 4px;
               }
             </style>
-            <script src="https://cdn.jsdelivr.net/npm/latex.js/dist/latex.js"></script>
+            \(env.styleTag)
+            \(env.scriptTag)
           </head>
           <body>
             <div id="container"></div>
@@ -103,10 +105,7 @@ class WebViewPDFRenderer: NSObject, WKNavigationDelegate {
                   const src = "\(escaped)";
                   const generator = new latexjs.HtmlGenerator({ hyphenate: false });
                   latexjs.parse(src, { generator: generator });
-                  
-                  // Inject styles and scripts
-                  document.head.appendChild(generator.stylesAndScripts("https://cdn.jsdelivr.net/npm/latex.js/dist/"));
-                  
+
                   // Append the generated HTML
                   document.body.appendChild(generator.domFragment());
                 } catch (e) {

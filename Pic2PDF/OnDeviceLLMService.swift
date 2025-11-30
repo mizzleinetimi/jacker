@@ -12,6 +12,7 @@ import ZIPFoundation
 import Combine
 import Accelerate
 import os.signpost
+import CryptoKit
 
 /// Represents the available AI models optimized for image-to-LaTeX conversion
 public enum ModelIdentifier: String, CaseIterable, Identifiable {
@@ -138,25 +139,10 @@ struct OnDeviceModel {
 
 /// Represents a chat session with the on-device AI model
 final class AIChatSession {
-    private let model: OnDeviceModel
-    private var session: LlmInference.Session
-
-    init(model: OnDeviceModel,
-         topK: Int = 40,
-         topP: Float = 0.9,
-         temperature: Float = 0.7,
-         enableVisionModality: Bool = true) throws {
-        self.model = model
-
-        let options = LlmInference.Session.Options()
-        options.topk = topK
-        options.topp = topP
-        options.temperature = temperature
-        options.enableVisionModality = enableVisionModality
-        
-        NSLog("[AIChatSession] Creating session with visionModality=\(enableVisionModality), topK=\(topK), temp=\(temperature)")
-        session = try LlmInference.Session(llmInference: model.inference, options: options)
-        NSLog("[AIChatSession] Session created successfully")
+    private let session: LlmInference.Session
+    
+    init(session: LlmInference.Session) {
+        self.session = session
     }
 
     /// Adds an image to the current query context
@@ -198,7 +184,6 @@ struct GenerationMetrics: Identifiable {
 }
 
 /// Main service class for on-device LLM processing in Pic2PDF
-@MainActor
 final class OnDeviceLLMService: ObservableObject {
     // MARK: - Published Properties
     @Published var isInitialized = false
@@ -228,8 +213,8 @@ final class OnDeviceLLMService: ObservableObject {
     // MARK: - Public Model Access
     /// Public access to current model information for UI display
     var currentModelInfo: (identifier: ModelIdentifier, isInitialized: Bool) {
-        if let model = currentModel {
-            return (model.identifier, true)
+        if let modelId = cachedModelIdentifier {
+            return (modelId, isInitialized)
         }
         return (preferredModel, false) // Return preferred model even if not initialized
     }
@@ -240,12 +225,13 @@ final class OnDeviceLLMService: ObservableObject {
     }
 
     // MARK: - Private Properties
-    private var currentModel: OnDeviceModel?
-    private var currentSession: AIChatSession?
+    private let engine = LLMEngine()
+    private var cachedModelIdentifier: ModelIdentifier?
     private var preferredModel: ModelIdentifier = .gemma2B
     private var metricsTimer: Timer?
     private let signpostLog = OSLog(subsystem: "com.pic2pdf.app", category: "LLM")
     private var firstTokenLogged = false
+    private var downscaledImageCache: [String: CGImage] = [:]
 
     private var isPerformanceModeEnabled: Bool {
         return UserDefaults.standard.bool(forKey: "performanceModeEnabled")
@@ -269,20 +255,22 @@ final class OnDeviceLLMService: ObservableObject {
     
     private var userMaxTokens: Int {
         let value = UserDefaults.standard.integer(forKey: "llmMaxTokens")
-        return value > 0 ? value : 2000
+        // Default to 1500 for faster generation (was 2000)
+        return value > 0 ? value : 1500
     }
 
     // MARK: - Singleton
     static let shared = OnDeviceLLMService()
 
     private init() {
-        setupMetricsMonitoring()
+        Task { await self.setupMetricsMonitoring() }
         Task {
             await initializeModel()
         }
     }
 
     // MARK: - Metrics Monitoring
+    @MainActor
     private func setupMetricsMonitoring() {
         // Update real-time metrics every second
         metricsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -335,6 +323,7 @@ final class OnDeviceLLMService: ObservableObject {
         deviceTemperature = baseTemp + Double.random(in: -2...2) + thermalAdjustment
     }
 
+    @MainActor
     private func recordGenerationMetrics(inputImages: Int, outputTokens: Int, generationTime: TimeInterval, batteryBefore: Int) {
         let tokensPerSecond = Double(outputTokens) / generationTime
         let memoryUsage = currentMemoryUsage
@@ -372,35 +361,40 @@ final class OnDeviceLLMService: ObservableObject {
 
     // MARK: - Model Management
 
-    /// Initializes the preferred AI model
-    private func initializeModel() async {
+    /// Initializes the preferred AI model - can be called after model download completes
+    func initializeModel() async {
         do {
             let startTime = Date()
             os_signpost(.begin, log: signpostLog, name: "ModelInit", "Model=%{public}@", preferredModel.displayName)
 
             // Use user-configured max tokens, with performance mode override
             let maxTokens = isPerformanceModeEnabled ? min(1200, userMaxTokens) : userMaxTokens
-            currentModel = try OnDeviceModel(modelIdentifier: preferredModel, maxTokens: maxTokens)
-            currentSession = try AIChatSession(model: currentModel!)
+            let model = try await engine.initializeModel(identifier: preferredModel, maxTokens: maxTokens)
 
             let endTime = Date()
-            modelInitializationTime = endTime.timeIntervalSince(startTime)
+            let elapsed = endTime.timeIntervalSince(startTime)
 
-            isInitialized = true
-            initializationError = nil
+            await MainActor.run {
+                cachedModelIdentifier = model.identifier
+                modelInitializationTime = elapsed
+                isInitialized = true
+                initializationError = nil
+            }
 
             os_signpost(.end, log: signpostLog, name: "ModelInit")
             NSLog("AI model \(preferredModel.displayName) initialized in \(modelInitializationTime)s (perfMode=\(isPerformanceModeEnabled))")
         } catch {
-            initializationError = "Failed to initialize on-device LLM: \(error.localizedDescription)"
-            isInitialized = false
+            await MainActor.run {
+                initializationError = "Failed to initialize on-device LLM: \(error.localizedDescription)"
+                isInitialized = false
+            }
             NSLog("Model initialization error: \(error)")
         }
     }
 
     /// Checks if the service is ready for inference
     func isReady() -> Bool {
-        return isInitialized && currentSession != nil
+        return isInitialized
     }
     
     /// Switch to a different model
@@ -417,10 +411,12 @@ final class OnDeviceLLMService: ObservableObject {
         preferredModel = modelIdentifier
         
         // Reset initialization state
-        isInitialized = false
-        initializationError = nil
-        currentModel = nil
-        currentSession = nil
+        await MainActor.run {
+            isInitialized = false
+            initializationError = nil
+            cachedModelIdentifier = nil
+        }
+        await engine.resetSessions()
         
         // Initialize new model
         await initializeModel()
@@ -461,32 +457,62 @@ final class OnDeviceLLMService: ObservableObject {
         
         NSLog("[OnDeviceLLM] Creating vision-enabled session (perfMode=\(isPerformanceModeEnabled))")
         NSLog("[OnDeviceLLM] Parameters: temp=\(temp), topP=\(tP), topK=\(tK)")
-        let session = try AIChatSession(
-            model: currentModel!,
-            topK: tK,
-            topP: tP,
-            temperature: temp,
-            enableVisionModality: true
-        )
+        let sessionHandle = try await engine.session(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: true))
+        let session = AIChatSession(session: sessionHandle)
         NSLog("[OnDeviceLLM] Session created with vision modality enabled")
 
         // Downscale images in parallel (Accelerate) for lower memory and faster vision path
+        // Smaller images = faster processing. 768px is usually sufficient for text/math recognition
         os_signpost(.begin, log: signpostLog, name: "PreprocessImages")
-        let maxDimension = isPerformanceModeEnabled ? 1024 : 1536
-        let processedCGImages: [CGImage] = await withTaskGroup(of: CGImage?.self) { group in
-            for img in images {
-                group.addTask(priority: .userInitiated) {
-                    guard let cg = img.cgImage else { return nil }
-                    return downscaleCGImageAccelerate(cg, maxDimension: maxDimension) ?? cg
+        let maxDimension = isPerformanceModeEnabled ? 768 : 1024
+        var processedByIndex: [Int: CGImage] = [:]
+        var pendingTasks: [(index: Int, image: UIImage, cacheKey: String?)] = []
+        var keyByIndex: [Int: String] = [:]
+
+        for (idx, image) in images.enumerated() {
+            let cacheKey = imageCacheKey(for: image, maxDimension: maxDimension)
+            if let cacheKey, let cached = downscaledImageCache[cacheKey] {
+                processedByIndex[idx] = cached
+            } else {
+                pendingTasks.append((idx, image, cacheKey))
+                if let cacheKey {
+                    keyByIndex[idx] = cacheKey
                 }
             }
-            var results: [CGImage] = []
-            while let next = await group.next() {
-                if let img = next { results.append(img) }
-            }
-            return results
         }
+
+        var cacheUpdates: [(String, CGImage)] = []
+        if !pendingTasks.isEmpty {
+            await withTaskGroup(of: (Int, CGImage?).self) { group in
+                for task in pendingTasks {
+                    group.addTask(priority: .userInitiated) {
+                        guard let cg = task.image.cgImage else { return (task.index, nil) }
+                        let scaled = downscaleCGImageAccelerate(cg, maxDimension: maxDimension) ?? cg
+                        return (task.index, scaled)
+                    }
+                }
+
+                while let result = await group.next() {
+                    if let image = result.1 {
+                        processedByIndex[result.0] = image
+                        if let key = keyByIndex[result.0] {
+                            cacheUpdates.append((key, image))
+                        }
+                    }
+                }
+            }
+        }
+
+        for update in cacheUpdates {
+            downscaledImageCache[update.0] = update.1
+        }
+
+        let processedCGImages = (0..<images.count).compactMap { processedByIndex[$0] }
         os_signpost(.end, log: signpostLog, name: "PreprocessImages")
+
+        guard !processedCGImages.isEmpty else {
+            throw OnDeviceLLMError.invalidImage
+        }
 
         NSLog("[OnDeviceLLM] Adding \(processedCGImages.count) images to query")
         for (index, cgImage) in processedCGImages.enumerated() {
@@ -514,8 +540,11 @@ final class OnDeviceLLMService: ObservableObject {
         let generationStartTime = Date()
         var lastUIUpdate = Date.distantPast
         firstTokenLogged = false
+        let promptTokenEstimate = (try? session.sizeInTokens(text: prompt)) ?? max(prompt.count / 4, 1)
+        let outputTokenLimit = computeOutputLimit(promptEstimate: promptTokenEstimate)
+        var producedTokens = 0
 
-        for try await chunk in stream {
+        streamingLoop: for try await chunk in stream {
             fullResponse += chunk
 
             // First token event
@@ -538,6 +567,11 @@ final class OnDeviceLLMService: ObservableObject {
                 }
                 lastUIUpdate = now
             }
+            
+            producedTokens += max(chunk.count / 4, 1)
+            if producedTokens >= outputTokenLimit {
+                break streamingLoop
+            }
         }
 
         let endTime = Date()
@@ -555,12 +589,14 @@ final class OnDeviceLLMService: ObservableObject {
         let estimatedTokens = (try? session.sizeInTokens(text: fullResponse)) ?? (fullResponse.count / 4)
 
         // Record performance metrics
-        recordGenerationMetrics(
-            inputImages: images.count,
-            outputTokens: estimatedTokens,
-            generationTime: generationTime,
-            batteryBefore: batteryBefore
-        )
+        await MainActor.run {
+            recordGenerationMetrics(
+                inputImages: images.count,
+                outputTokens: estimatedTokens,
+                generationTime: generationTime,
+                batteryBefore: batteryBefore
+            )
+        }
 
         return latexResult
     }
@@ -597,13 +633,8 @@ final class OnDeviceLLMService: ObservableObject {
         
         NSLog("[OnDeviceLLM] Creating text-only session for refinement")
         NSLog("[OnDeviceLLM] Parameters: temp=\(temp), topP=\(tP), topK=\(tK)")
-        let session = try AIChatSession(
-            model: currentModel!,
-            topK: tK,
-            topP: tP,
-            temperature: temp,
-            enableVisionModality: false
-        )
+        let sessionHandle = try await engine.session(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: false))
+        let session = AIChatSession(session: sessionHandle)
 
         await MainActor.run {
             status.statusMessage = "Refining LaTeX with on-device AI..."
@@ -619,8 +650,11 @@ final class OnDeviceLLMService: ObservableObject {
         let generationStartTime = Date()
         var lastUIUpdate = Date.distantPast
         firstTokenLogged = false
+        let promptTokenEstimate = (try? session.sizeInTokens(text: prompt)) ?? max(prompt.count / 4, 1)
+        let outputTokenLimit = computeOutputLimit(promptEstimate: promptTokenEstimate)
+        var producedTokens = 0
 
-        for try await chunk in stream {
+        streamingLoop: for try await chunk in stream {
             fullResponse += chunk
 
             if !firstTokenLogged && !chunk.isEmpty {
@@ -642,6 +676,11 @@ final class OnDeviceLLMService: ObservableObject {
                 }
                 lastUIUpdate = now
             }
+            
+            producedTokens += max(chunk.count / 4, 1)
+            if producedTokens >= outputTokenLimit {
+                break streamingLoop
+            }
         }
 
         let endTime = Date()
@@ -658,44 +697,116 @@ final class OnDeviceLLMService: ObservableObject {
         let estimatedTokens = (try? session.sizeInTokens(text: fullResponse)) ?? (fullResponse.count / 4)
 
         // Record performance metrics for refinement (0 images since we're only refining LaTeX)
-        recordGenerationMetrics(
-            inputImages: 0,
-            outputTokens: estimatedTokens,
-            generationTime: generationTime,
-            batteryBefore: batteryBefore
-        )
+        await MainActor.run {
+            recordGenerationMetrics(
+                inputImages: 0,
+                outputTokens: estimatedTokens,
+                generationTime: generationTime,
+                batteryBefore: batteryBefore
+            )
+        }
 
         return latexResult
+    }
+
+    // MARK: - Chat Generation
+    
+    /// Generates a chat response using the on-device LLM (text-only, no images)
+    /// - Parameters:
+    ///   - prompt: The user's message/question
+    ///   - onPartialResponse: Callback for streaming partial responses
+    /// - Returns: The complete response string
+    func generateChatResponse(prompt: String, onPartialResponse: @escaping (String) -> Void) async throws -> String {
+        guard isReady() else {
+            throw OnDeviceLLMError.notInitialized
+        }
+
+        let startTime = Date()
+        let batteryBefore = batteryLevel
+
+        await MainActor.run {
+            streamingLaTeX = "" // Reuse for streaming display
+            currentTokensPerSecond = 0.0
+        }
+
+        // Create a text-only session for chat
+        let temp = userTemperature
+        let tP = userTopP
+        let tK = userTopK
+        
+        NSLog("[OnDeviceLLM] Creating chat session")
+        let sessionHandle = try await engine.session(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: false))
+        let session = AIChatSession(session: sessionHandle)
+
+        // Generate response with streaming
+        let stream = try await session.generateLaTeX(prompt: prompt)
+        var fullResponse = ""
+        let generationStartTime = Date()
+        var lastUIUpdate = Date.distantPast
+        let promptTokenEstimate = (try? session.sizeInTokens(text: prompt)) ?? max(prompt.count / 4, 1)
+        let outputTokenLimit = computeOutputLimit(promptEstimate: promptTokenEstimate)
+        var producedTokens = 0
+
+        streamingLoop: for try await chunk in stream {
+            fullResponse += chunk
+
+            let now = Date()
+            if now.timeIntervalSince(lastUIUpdate) >= (1.0 / 30.0) {
+                let elapsedTime = now.timeIntervalSince(generationStartTime)
+                let estimatedTokens = max(fullResponse.count / 4, 1)
+                let tokensPerSec = elapsedTime > 0 ? Double(estimatedTokens) / elapsedTime : 0
+
+                await MainActor.run {
+                    currentTokensPerSecond = tokensPerSec
+                }
+                onPartialResponse(fullResponse)
+                lastUIUpdate = now
+            }
+            
+            producedTokens += max(chunk.count / 4, 1)
+            if producedTokens >= outputTokenLimit {
+                break streamingLoop
+            }
+        }
+
+        let endTime = Date()
+        let generationTime = endTime.timeIntervalSince(startTime)
+
+        // Estimate token count
+        let estimatedTokens = (try? session.sizeInTokens(text: fullResponse)) ?? (fullResponse.count / 4)
+
+        // Record metrics
+        await MainActor.run {
+            recordGenerationMetrics(
+                inputImages: 0,
+                outputTokens: estimatedTokens,
+                generationTime: generationTime,
+                batteryBefore: batteryBefore
+            )
+        }
+
+        return fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Private Helper Methods
 
     private func createLaTeXGenerationPrompt(additionalPrompt: String?) -> String {
+        // Concise prompt for faster generation
         let basePrompt = """
-        Look at the image(s) I provided above. What text, equations, or content do you see in the image?
-
-        Transcribe it into this LaTeX format:
+        Convert the image content to LaTeX. Output ONLY valid LaTeX code:
 
         \\documentclass{article}
         \\usepackage{amsmath}
         \\usepackage{amssymb}
         \\begin{document}
-
-        [transcribe the actual content from the image here]
-
+        [YOUR TRANSCRIPTION HERE]
         \\end{document}
 
-        Important:
-        - Only transcribe what you actually see in the provided image
-        - Use $ $ for inline math, \\[ \\] for display math
-        - Use \\textbf{} for bold, \\textit{} for italic
-        - If there's a diagram, write [Figure: description]
-        - Do NOT make up example content
-        - Do NOT include explanations, only LaTeX code
+        Rules: Use $ $ for inline math, \\[ \\] for display math. No explanations.
         """
 
         if let additional = additionalPrompt, !additional.isEmpty {
-            return basePrompt + "\n\n" + additional
+            return basePrompt + "\n" + additional
         }
 
         return basePrompt
@@ -724,6 +835,24 @@ final class OnDeviceLLMService: ObservableObject {
 
         Refined LaTeX:
         """
+    }
+    
+    private func makeSessionKey(topK: Int, topP: Float, temperature: Float, enableVision: Bool) -> LLMEngine.SessionKey {
+        return LLMEngine.SessionKey(topK: topK, topP: topP, temperature: temperature, enableVision: enableVision)
+    }
+    
+    private func computeOutputLimit(promptEstimate: Int) -> Int {
+        let remainingBudget = max(userMaxTokens - promptEstimate / 2, 128)
+        return min(userMaxTokens, remainingBudget)
+    }
+
+    private func imageCacheKey(for image: UIImage, maxDimension: Int) -> String? {
+        guard let data = image.pngData() ?? image.jpegData(compressionQuality: 0.95) else {
+            return nil
+        }
+        let digest = SHA256.hash(data: data)
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return "\(maxDimension)-\(hex)"
     }
 
     private func extractLaTeXFromResponse(_ response: String) -> String {
@@ -778,11 +907,12 @@ private func downscaleCGImageAccelerate(_ src: CGImage, maxDimension: Int) -> CG
     let dstW = Int(Double(width) * scale)
     let dstH = Int(Double(height) * scale)
 
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
     var format = vImage_CGImageFormat(
         bitsPerComponent: 8,
         bitsPerPixel: 32,
-        colorSpace: Unmanaged.passUnretained(CGColorSpaceCreateDeviceRGB()),
-        bitmapInfo: CGBitmapInfo.byteOrder32Little.union(.init(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)),
+        colorSpace: Unmanaged.passUnretained(colorSpace),
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
         version: 0,
         decode: nil,
         renderingIntent: .defaultIntent
@@ -790,14 +920,24 @@ private func downscaleCGImageAccelerate(_ src: CGImage, maxDimension: Int) -> CG
 
     var srcBuf = vImage_Buffer()
     var dstBuf = vImage_Buffer()
-    defer {
-        free(srcBuf.data)
-        free(dstBuf.data)
-    }
 
     guard vImageBuffer_InitWithCGImage(&srcBuf, &format, nil, src, vImage_Flags(kvImageNoFlags)) == kvImageNoError else { return nil }
+    defer { free(srcBuf.data) }
+    
     guard vImageBuffer_Init(&dstBuf, vImagePixelCount(dstH), vImagePixelCount(dstW), format.bitsPerPixel, vImage_Flags(kvImageNoFlags)) == kvImageNoError else { return nil }
 
-    vImageScale_ARGB8888(&srcBuf, &dstBuf, nil, vImage_Flags(kvImageHighQualityResampling))
-    return vImageCreateCGImageFromBuffer(&dstBuf, &format, nil, nil, vImage_Flags(kvImageNoAllocate), nil)?.takeRetainedValue()
+    let scaleError = vImageScale_ARGB8888(&srcBuf, &dstBuf, nil, vImage_Flags(kvImageHighQualityResampling))
+    guard scaleError == kvImageNoError else {
+        free(dstBuf.data)
+        return nil
+    }
+    
+    // Use kvImageNoFlags to let vImage copy the data, so we can safely free dstBuf after
+    let result = vImageCreateCGImageFromBuffer(&dstBuf, &format, { _, ptr in
+        // This callback is called when the CGImage is deallocated
+        free(ptr)
+    }, nil, vImage_Flags(kvImageNoFlags), nil)?.takeRetainedValue()
+    
+    // Don't free dstBuf.data here - it's now owned by the CGImage via the callback
+    return result
 }

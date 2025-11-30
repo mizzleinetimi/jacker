@@ -181,62 +181,54 @@ struct SettingsView: View {
                 // AI Model Management Section
                 Section {
                     // Model Selector Dropdown
-                    Picker("Current Model", selection: Binding(
-                        get: { llmService.selectedModel },
-                        set: { newModel in
-                            Task {
-                                await llmService.switchModel(to: newModel)
+                    if ModelIdentifier.allCases.contains(where: { downloadManager.isModelDownloaded($0) }) {
+                        Picker("Current Model", selection: Binding(
+                            get: { llmService.selectedModel },
+                            set: { newModel in
+                                Task {
+                                    await llmService.switchModel(to: newModel)
+                                }
                             }
-                        }
-                    )) {
-                        ForEach(ModelIdentifier.allCases.filter { downloadManager.isModelDownloaded($0) }) { model in
-                            Text(model.displayName).tag(model)
+                        )) {
+                            ForEach(ModelIdentifier.allCases.filter { downloadManager.isModelDownloaded($0) }) { model in
+                                Text(model.displayName).tag(model)
+                            }
                         }
                     }
                     
                     // Downloaded Models List
                     ForEach([ModelIdentifier.gemma2B, ModelIdentifier.gemma4B], id: \.self) { model in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(model.displayName)
-                                    .font(.subheadline)
-                                
-                                if downloadManager.isModelDownloaded(model) {
-                                    if let size = downloadManager.modelSize(model) {
-                                        Text("\(String(format: "%.1f", size)) MB")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                } else {
-                                    Text("Not downloaded")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            
-                            Spacer()
-                            
-                            if downloadManager.isModelDownloaded(model) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                            } else {
-                                Button("Download") {
-                                    Task {
-                                        do {
-                                            try await downloadManager.downloadModel(model)
-                                        } catch {
-                                            print("Failed to download model: \(error)")
-                                        }
-                                    }
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                        }
+                        ModelDownloadRow(model: model, downloadManager: downloadManager)
                     }
                 } header: {
                     Text("AI Models")
                 } footer: {
                     Text("Download AI models for on-device processing. Models are stored locally and never uploaded.")
+                }
+                
+                // Download Progress Section (shown when downloading)
+                if downloadManager.downloadStatus.isInProgress {
+                    Section {
+                        DownloadProgressView(downloadManager: downloadManager)
+                    } header: {
+                        Text("Download Progress")
+                    }
+                }
+                
+                // Download Logs Section
+                if !downloadManager.downloadLogs.isEmpty {
+                    Section {
+                        DownloadLogsView(downloadManager: downloadManager)
+                    } header: {
+                        HStack {
+                            Text("Download Logs")
+                            Spacer()
+                            Button("Clear") {
+                                downloadManager.clearLogs()
+                            }
+                            .font(.caption)
+                        }
+                    }
                 }
                 
                 // Data Management Section
@@ -349,6 +341,261 @@ struct SettingsView: View {
         topP = 0.9
         topK = 40
         maxTokens = 2000
+    }
+}
+
+// MARK: - Model Download Row
+struct ModelDownloadRow: View {
+    let model: ModelIdentifier
+    @ObservedObject var downloadManager: ModelDownloadManager
+    
+    var isCurrentlyDownloading: Bool {
+        downloadManager.currentDownloadingModel == model && downloadManager.downloadStatus.isInProgress
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(model.displayName)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        
+                        if isCurrentlyDownloading {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                        }
+                    }
+                    
+                    if downloadManager.isModelDownloaded(model) {
+                        if let size = downloadManager.modelSize(model) {
+                            Text("\(String(format: "%.1f", size)) MB • Downloaded")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                        }
+                    } else if isCurrentlyDownloading {
+                        if case .downloading(let progress, let downloaded, let total) = downloadManager.downloadStatus {
+                            Text("\(formatBytes(downloaded)) / \(formatBytes(total))")
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                        }
+                    } else {
+                        let expectedSize = DownloadableModelConfig.availableModels[model]?.expectedSizeMB ?? 0
+                        Text("~\(String(format: "%.1f", expectedSize)) MB • Not downloaded")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                Spacer()
+                
+                if downloadManager.isModelDownloaded(model) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.title2)
+                } else if isCurrentlyDownloading {
+                    Button("Cancel") {
+                        downloadManager.cancelDownload()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                } else if !downloadManager.downloadStatus.isInProgress {
+                    // Show Retry if we have resume data for this model, otherwise Download
+                    if downloadManager.canResumeDownload() {
+                        Button("Retry") {
+                            Task {
+                                do {
+                                    try await downloadManager.retryDownload()
+                                } catch {
+                                    print("Failed to retry download: \(error)")
+                                }
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+                    } else {
+                        Button("Download") {
+                            Task {
+                                do {
+                                    try await downloadManager.downloadModel(model)
+                                } catch {
+                                    print("Failed to download model: \(error)")
+                                }
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+            
+            // Progress bar for this model
+            if isCurrentlyDownloading {
+                if case .downloading(let progress, _, _) = downloadManager.downloadStatus {
+                    ProgressView(value: progress)
+                        .progressViewStyle(LinearProgressViewStyle())
+                        .tint(.blue)
+                }
+            }
+            
+            // Show failed status with resume info
+            if case .failed(let error) = downloadManager.downloadStatus {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Failed: \(error)")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                    if downloadManager.canResumeDownload() {
+                        Text("Tap Retry to resume from where it stopped")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+    
+    private func formatBytes(_ bytes: Int64) -> String {
+        let mb = Double(bytes) / (1024 * 1024)
+        if mb >= 1024 {
+            return String(format: "%.2f GB", mb / 1024)
+        }
+        return String(format: "%.0f MB", mb)
+    }
+}
+
+// MARK: - Download Progress View
+struct DownloadProgressView: View {
+    @ObservedObject var downloadManager: ModelDownloadManager
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            if case .downloading(let progress, let downloaded, let total) = downloadManager.downloadStatus {
+                // Circular progress
+                ZStack {
+                    Circle()
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 10)
+                        .frame(width: 100, height: 100)
+                    
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(Color.blue, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                        .frame(width: 100, height: 100)
+                        .rotationEffect(.degrees(-90))
+                        .animation(.linear(duration: 0.3), value: progress)
+                    
+                    VStack(spacing: 2) {
+                        Text("\(Int(progress * 100))%")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        if let model = downloadManager.currentDownloadingModel {
+                            Text(model == .gemma2B ? "2B" : "4B")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
+                // Stats
+                VStack(spacing: 8) {
+                    HStack {
+                        Label("\(formatBytes(downloaded)) / \(formatBytes(total))", systemImage: "arrow.down.circle")
+                        Spacer()
+                        if downloadManager.downloadSpeed > 0 {
+                            Label(String(format: "%.1f MB/s", downloadManager.downloadSpeed), systemImage: "speedometer")
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    
+                    if downloadManager.estimatedTimeRemaining > 0 {
+                        HStack {
+                            Label("ETA: \(formatTime(downloadManager.estimatedTimeRemaining))", systemImage: "clock")
+                            Spacer()
+                        }
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    }
+                }
+                
+                // Cancel button
+                Button(role: .destructive) {
+                    downloadManager.cancelDownload()
+                } label: {
+                    Label("Cancel Download", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(.vertical, 8)
+    }
+    
+    private func formatBytes(_ bytes: Int64) -> String {
+        let mb = Double(bytes) / (1024 * 1024)
+        if mb >= 1024 {
+            return String(format: "%.2f GB", mb / 1024)
+        }
+        return String(format: "%.0f MB", mb)
+    }
+    
+    private func formatTime(_ seconds: TimeInterval) -> String {
+        if seconds < 60 {
+            return "\(Int(seconds))s"
+        } else if seconds < 3600 {
+            let mins = Int(seconds) / 60
+            let secs = Int(seconds) % 60
+            return "\(mins)m \(secs)s"
+        } else {
+            let hours = Int(seconds) / 3600
+            let mins = (Int(seconds) % 3600) / 60
+            return "\(hours)h \(mins)m"
+        }
+    }
+}
+
+// MARK: - Download Logs View
+struct DownloadLogsView: View {
+    @ObservedObject var downloadManager: ModelDownloadManager
+    @State private var isExpanded = true
+    
+    var body: some View {
+        DisclosureGroup("Recent Activity (\(downloadManager.downloadLogs.count))", isExpanded: $isExpanded) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(downloadManager.downloadLogs.reversed()) { log in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: log.icon)
+                                .font(.caption)
+                                .foregroundColor(logColor(for: log.type))
+                                .frame(width: 16)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(log.message)
+                                    .font(.caption)
+                                    .foregroundColor(.primary)
+                                
+                                Text(log.timestamp, style: .time)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .frame(maxHeight: 200)
+        }
+    }
+    
+    private func logColor(for type: DownloadLogEntry.LogType) -> Color {
+        switch type {
+        case .info: return .blue
+        case .success: return .green
+        case .error: return .red
+        case .progress: return .orange
+        }
     }
 }
 
