@@ -20,15 +20,45 @@ struct ChatMessage: Identifiable, Equatable {
 
 struct ChatView: View {
     @StateObject private var llmService = OnDeviceLLMService.shared
+    @StateObject private var downloadManager = ModelDownloadManager.shared
     @State private var messages: [ChatMessage] = []
     @State private var inputText: String = ""
     @State private var isGenerating: Bool = false
     @State private var streamingResponse: String = ""
+    @State private var pendingSendTask: Task<Void, Never>?
+    @State private var showModelPicker: Bool = false
     @FocusState private var isInputFocused: Bool
+    
+    private var availableTextModels: [ModelIdentifier] {
+        // Only show text-only models that are downloaded
+        [.gemma270M, .gemma1B].filter { downloadManager.isModelDownloaded($0) }
+    }
     
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
+                // Model indicator bar
+                if !availableTextModels.isEmpty {
+                    HStack {
+                        Image(systemName: "cpu")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text("Model: \(llmService.selectedModel.displayName)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        if availableTextModels.count > 1 {
+                            Button("Switch") {
+                                showModelPicker = true
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 6)
+                    .background(Color(.systemGray6))
+                }
+                
                 // Chat messages
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -116,6 +146,19 @@ struct ChatView: View {
                     ModelNotReadyOverlay()
                 }
             }
+            .sheet(isPresented: $showModelPicker) {
+                ModelPickerSheet(
+                    availableModels: availableTextModels,
+                    currentModel: llmService.selectedModel,
+                    onSelect: { model in
+                        Task {
+                            await llmService.switchModel(to: model)
+                        }
+                        showModelPicker = false
+                    }
+                )
+                .presentationDetents([.medium])
+            }
         }
     }
     
@@ -154,9 +197,14 @@ struct ChatView: View {
         inputText = ""
         isInputFocused = false
         
-        // Generate response
-        Task {
+        // Generate response with light batching to allow rapid edits
+        pendingSendTask?.cancel()
+        pendingSendTask = Task {
+            try? await Task.sleep(nanoseconds: 100_000_000)
             await generateResponse(to: userMessage)
+            await MainActor.run {
+                pendingSendTask = nil
+            }
         }
     }
     
@@ -167,7 +215,10 @@ struct ChatView: View {
         }
         
         do {
-            let response = try await llmService.generateChatResponse(prompt: prompt) { partialResponse in
+            // Build conversation history for context (last 6 messages max to fit in context window)
+            let contextPrompt = buildConversationPrompt(newMessage: prompt)
+            
+            let response = try await llmService.generateChatResponse(prompt: contextPrompt) { partialResponse in
                 Task { @MainActor in
                     streamingResponse = partialResponse
                 }
@@ -186,6 +237,26 @@ struct ChatView: View {
                 isGenerating = false
             }
         }
+    }
+    
+    /// Build a prompt that includes conversation history for context
+    /// Uses Gemma's chat format: <start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n
+    private func buildConversationPrompt(newMessage: String) -> String {
+        var prompt = ""
+        
+        // Include last 4 messages for context (2 exchanges) - keep it short for 1B model
+        let recentMessages = messages.suffix(4)
+        for msg in recentMessages {
+            if msg.isUser {
+                prompt += "<start_of_turn>user\n\(msg.content)<end_of_turn>\n"
+            } else {
+                prompt += "<start_of_turn>model\n\(msg.content)<end_of_turn>\n"
+            }
+        }
+        
+        // Add the new user message
+        prompt += "<start_of_turn>user\n\(newMessage)<end_of_turn>\n<start_of_turn>model\n"
+        return prompt
     }
     
     private func clearChat() {
@@ -365,6 +436,67 @@ struct ModelNotReadyOverlay: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground).opacity(0.9))
+    }
+}
+
+// MARK: - Model Picker Sheet
+struct ModelPickerSheet: View {
+    let availableModels: [ModelIdentifier]
+    let currentModel: ModelIdentifier
+    let onSelect: (ModelIdentifier) -> Void
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    ForEach(availableModels, id: \.self) { model in
+                        Button(action: { onSelect(model) }) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(model.displayName)
+                                        .font(.headline)
+                                        .foregroundColor(.primary)
+                                    Text(modelDescription(for: model))
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                if model == currentModel {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.blue)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                } header: {
+                    Text("Select Chat Model")
+                } footer: {
+                    Text("Smaller models are faster but may be less accurate. The 270M model is optimized for quick responses.")
+                }
+            }
+            .navigationTitle("Chat Model")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+    
+    private func modelDescription(for model: ModelIdentifier) -> String {
+        switch model {
+        case .gemma270M:
+            return "Ultra-fast, ~290MB • Best for quick chats & grading"
+        case .gemma1B:
+            return "Balanced, ~529MB • Better reasoning"
+        case .gemma2B:
+            return "Vision-capable, ~3GB • Image understanding"
+        case .gemma4B:
+            return "Most capable, ~4.5GB • Best quality"
+        }
     }
 }
 

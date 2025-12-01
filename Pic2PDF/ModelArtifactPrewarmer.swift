@@ -17,6 +17,10 @@ enum ModelArtifactPrewarmer {
     /// Copies the downloaded `.task` file into Application Support and extracts the vision encoder/adapter if needed.
     static func prewarmArtifactsIfNeeded(for identifier: ModelIdentifier, sourceURL: URL) {
         Task.detached(priority: .utility) {
+            guard identifier.supportsVision else {
+                os_log("Skipping prewarm for text-only model %{public}@", log: log, type: .info, identifier.displayName)
+                return
+            }
             do {
                 try performPrewarm(for: identifier, sourceURL: sourceURL)
                 os_log("Prewarmed artifacts for %{public}@", log: log, type: .info, identifier.displayName)

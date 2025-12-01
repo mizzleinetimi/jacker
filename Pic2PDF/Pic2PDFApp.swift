@@ -23,7 +23,7 @@ struct Pic2PDFApp: App {
                     ContentView()
                         .environmentObject(storageManager)
                         .environmentObject(appState)
-                        .modelContainer(storageManager.modelContainer)
+                        .modelContainer(PersistenceController.shared.container)
                 }
             }
         }

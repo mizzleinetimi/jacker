@@ -2,7 +2,7 @@
 //  ContentView.swift
 //  Pic2PDF
 //
-//  Created by Younes Laaroussi on 2025-10-13.
+//  Reading Assistant - Turn PDFs and images into simple, swipeable cards
 //
 
 import SwiftUI
@@ -12,56 +12,39 @@ import Combine
 
 struct ContentView: View {
     @State private var selectedTab = 0
-    @StateObject private var mainGenerationViewModel = MainGenerationViewModel()
     @StateObject private var llmService = OnDeviceLLMService.shared
 
     var body: some View {
         ZStack {
             // Main Tab View
             TabView(selection: $selectedTab) {
-                // Main PDF Generation Tab
-                MainGenerationView(viewModel: mainGenerationViewModel)
+                // Library - Main reading tab
+                LibraryView()
                     .tabItem {
-                        Label("Generate", systemImage: "doc.badge.plus")
+                        Label("Library", systemImage: "books.vertical")
                     }
                     .tag(0)
 
-                // Chat Tab
+                // Flashcards Tab
+                FlashcardsView()
+                    .tabItem {
+                        Label("Flashcards", systemImage: "rectangle.stack")
+                    }
+                    .tag(1)
+
+                // Chat Tab - Ask questions about content
                 ChatView()
                     .tabItem {
                         Label("Chat", systemImage: "bubble.left.and.bubble.right")
                     }
-                    .tag(1)
-
-                // History Tab
-                NavigationView { HistoryView() }
-                    .tabItem {
-                        Label("History", systemImage: "clock.arrow.circlepath")
-                    }
                     .tag(2)
-
-                // Stats & Analytics Tab
-                StatsView()
-                    .tabItem {
-                        Label("Analytics", systemImage: "chart.bar.fill")
-                    }
-                    .tag(3)
                 
                 // Settings Tab
                 SettingsView()
                     .tabItem {
                         Label("Settings", systemImage: "gearshape")
                     }
-                    .tag(4)
-            }
-            
-            // Full-screen generation overlay (hides tabs)
-            if mainGenerationViewModel.isGenerating {
-                GenerationOverlayView(
-                    status: mainGenerationViewModel.generationStatus
-                )
-                .transition(.opacity)
-                .zIndex(999)
+                    .tag(3)
             }
             
             // Model loading overlay (fades screen until model is ready)
@@ -71,7 +54,6 @@ struct ContentView: View {
                     .zIndex(1000)
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: mainGenerationViewModel.isGenerating)
         .animation(.easeInOut(duration: 0.5), value: llmService.isInitialized)
     }
 }

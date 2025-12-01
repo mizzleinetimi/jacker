@@ -102,17 +102,17 @@ struct WelcomePage: View {
         VStack(spacing: 30) {
             Spacer()
             
-            Image(systemName: "doc.badge.plus")
+            Image(systemName: "books.vertical")
                 .font(.system(size: 100))
                 .foregroundColor(.white)
                 .shadow(radius: 10)
             
-            Text("Welcome to Pic2PDF")
+            Text("Smart Reader")
                 .font(.system(size: 36, weight: .bold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
             
-            Text("Convert Photos to Beautiful PDFs\nPowered by On-Device AI")
+            Text("Turn dense PDFs into simple,\nswipeable cards")
                 .font(.title3)
                 .foregroundColor(.white.opacity(0.9))
                 .multilineTextAlignment(.center)
@@ -121,11 +121,11 @@ struct WelcomePage: View {
             Spacer()
             
             VStack(spacing: 12) {
-                FeatureBadge(icon: "shield.fill", text: "Private & Secure")
+                FeatureBadge(icon: "doc.text.magnifyingglass", text: "AI Simplification")
                     .frame(maxWidth: 280)
-                FeatureBadge(icon: "bolt.fill", text: "Lightning Fast")
+                FeatureBadge(icon: "hand.draw", text: "Swipe to Read")
                     .frame(maxWidth: 280)
-                FeatureBadge(icon: "cpu", text: "Arm Optimized")
+                FeatureBadge(icon: "wifi.slash", text: "Works Offline")
                     .frame(maxWidth: 280)
             }
             .padding(.bottom, 50)
@@ -245,34 +245,34 @@ struct FeaturesPage: View {
         VStack(spacing: 25) {
             Spacer()
             
-            Text("Powerful Features")
+            Text("How It Works")
                 .font(.system(size: 32, weight: .bold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
             
             VStack(spacing: 20) {
                 FeatureCard(
-                    icon: "photo.on.rectangle",
-                    title: "Smart Image Processing",
-                    description: "AI analyzes your photos and generates professional LaTeX documents"
+                    icon: "doc.badge.plus",
+                    title: "1. Import Content",
+                    description: "Add PDFs or photos of textbooks, notes, and slides"
                 )
                 
                 FeatureCard(
-                    icon: "doc.text.magnifyingglass",
-                    title: "LaTeX Generation",
-                    description: "Converts handwritten notes, equations, and diagrams to LaTeX"
+                    icon: "text.magnifyingglass",
+                    title: "2. AI Extracts & Simplifies",
+                    description: "On-device OCR reads text, AI rewrites it in simple language"
                 )
                 
                 FeatureCard(
-                    icon: "arrow.clockwise",
-                    title: "Iterative Refinement",
-                    description: "Suggest changes and refine your PDFs with AI assistance"
+                    icon: "rectangle.stack",
+                    title: "3. Swipe Through Cards",
+                    description: "Read like stories - each card is a digestible chunk"
                 )
                 
                 FeatureCard(
-                    icon: "square.and.arrow.up",
-                    title: "Easy Sharing",
-                    description: "Save, share, and organize your generated PDFs effortlessly"
+                    icon: "checkmark.circle",
+                    title: "4. Learn & Remember",
+                    description: "Key takeaways highlighted, progress saved automatically"
                 )
             }
             .padding(.horizontal)
@@ -286,9 +286,22 @@ struct FeaturesPage: View {
 // MARK: - Model Download Page
 struct ModelDownloadPage: View {
     @StateObject private var downloadManager = ModelDownloadManager.shared
-    @State private var selectedModel: ModelIdentifier = .gemma2B
+    @State private var selectedModel: ModelIdentifier = ModelDownloadPage.recommendedModel()
     @State private var isDownloading = false
     @State private var downloadError: String?
+    
+    /// Recommend model based on device RAM
+    static func recommendedModel() -> ModelIdentifier {
+        let totalRAM = ProcessInfo.processInfo.physicalMemory
+        let totalRAMGB = Double(totalRAM) / (1024 * 1024 * 1024)
+        if totalRAMGB < 4.5 {
+            return .gemma1B  // Low RAM devices
+        } else if totalRAMGB < 6.0 {
+            return .gemma2B  // Medium RAM devices
+        } else {
+            return .gemma2B  // Default to 2B even for high RAM (4B is optional)
+        }
+    }
     
     var body: some View {
         VStack(spacing: 30) {
@@ -314,7 +327,7 @@ struct ModelDownloadPage: View {
             // Model Selection
             if !downloadManager.downloadStatus.isCompleted {
                 VStack(spacing: 16) {
-                    ForEach([ModelIdentifier.gemma2B, ModelIdentifier.gemma4B], id: \.self) { model in
+                    ForEach([ModelIdentifier.gemma270M, ModelIdentifier.gemma1B, ModelIdentifier.gemma2B, ModelIdentifier.gemma4B], id: \.self) { model in
                         ModelOptionCard(
                             model: model,
                             isSelected: selectedModel == model,
@@ -554,10 +567,14 @@ struct ModelOptionCard: View {
     
     private var modelDescription: String {
         switch model {
+        case .gemma270M:
+            return "~290 MB • Flashcard grading, 3GB RAM"
+        case .gemma1B:
+            return "~530 MB • Chat only, 4GB RAM"
         case .gemma2B:
-            return "~3.0 GB • Faster, Good quality"
+            return "~3.0 GB • Vision + Chat, 6GB RAM"
         case .gemma4B:
-            return "~4.5 GB • Slower, Best quality"
+            return "~4.5 GB • Best quality, 8GB RAM"
         }
     }
 }
@@ -575,12 +592,12 @@ struct GetStartedPage: View {
                 .foregroundColor(.white)
                 .shadow(radius: 10)
             
-            Text("You're All Set!")
+            Text("Ready to Learn!")
                 .font(.system(size: 36, weight: .bold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
             
-            Text("Start converting your photos to beautiful PDFs")
+            Text("Import your first document and start reading")
                 .font(.title3)
                 .foregroundColor(.white.opacity(0.9))
                 .multilineTextAlignment(.center)
@@ -591,7 +608,7 @@ struct GetStartedPage: View {
                     Image(systemName: "1.circle.fill")
                         .font(.title2)
                         .foregroundColor(.white)
-                    Text("Select or take photos")
+                    Text("Import a PDF or photos")
                         .foregroundColor(.white)
                     Spacer()
                 }
@@ -600,7 +617,7 @@ struct GetStartedPage: View {
                     Image(systemName: "2.circle.fill")
                         .font(.title2)
                         .foregroundColor(.white)
-                    Text("Tap 'Generate PDF'")
+                    Text("Swipe through simplified cards")
                         .foregroundColor(.white)
                     Spacer()
                 }
@@ -609,7 +626,7 @@ struct GetStartedPage: View {
                     Image(systemName: "3.circle.fill")
                         .font(.title2)
                         .foregroundColor(.white)
-                    Text("Review, refine, and share")
+                    Text("Learn faster, remember more")
                         .foregroundColor(.white)
                     Spacer()
                 }

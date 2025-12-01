@@ -19,9 +19,12 @@ struct SettingsView: View {
     @AppStorage("llmTopP") private var topP: Double = 0.9
     @AppStorage("llmTopK") private var topK: Int = 40
     @AppStorage("llmMaxTokens") private var maxTokens: Int = 2000
+    @AppStorage("gradingModelIdentifier") private var gradingModelIdentifierRaw: String = ModelIdentifier.gemma1B.rawValue
     
     @State private var showClearDataAlert = false
     @State private var showResetParamsAlert = false
+    @AppStorage("huggingFaceToken") private var huggingFaceToken: String = ""
+    @State private var showTokenInfo = false
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
@@ -178,6 +181,28 @@ struct SettingsView: View {
                     Text("Storage")
                 }
                 
+                // HuggingFace Token Section (for gated models)
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SecureField("HuggingFace Token", text: $huggingFaceToken)
+                            .textFieldStyle(.roundedBorder)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                        
+                        Button(action: { showTokenInfo = true }) {
+                            HStack {
+                                Image(systemName: "info.circle")
+                                Text("How to get a token")
+                            }
+                            .font(.caption)
+                        }
+                    }
+                } header: {
+                    Text("HuggingFace Authentication")
+                } footer: {
+                    Text("Required to download Gemma models. Get a free token from huggingface.co/settings/tokens")
+                }
+                
                 // AI Model Management Section
                 Section {
                     // Model Selector Dropdown
@@ -197,13 +222,29 @@ struct SettingsView: View {
                     }
                     
                     // Downloaded Models List
-                    ForEach([ModelIdentifier.gemma2B, ModelIdentifier.gemma4B], id: \.self) { model in
+                    ForEach([ModelIdentifier.gemma270M, ModelIdentifier.gemma1B, ModelIdentifier.gemma2B, ModelIdentifier.gemma4B], id: \.self) { model in
                         ModelDownloadRow(model: model, downloadManager: downloadManager)
                     }
                 } header: {
                     Text("AI Models")
                 } footer: {
                     Text("Download AI models for on-device processing. Models are stored locally and never uploaded.")
+                }
+                
+                // Flashcard grading preference
+                Section {
+                    Picker("Preferred Model", selection: gradingModelSelection) {
+                        ForEach([ModelIdentifier.gemma270M, .gemma1B, .gemma2B, .gemma4B], id: \.self) { model in
+                            Text(model.displayName).tag(model)
+                        }
+                    }
+                    Text("Gemma 3-270M is optimized for structured grading with minimal latency. Larger models remain available if you prioritize accuracy over speed.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                } header: {
+                    Text("Flashcard Grading")
+                } footer: {
+                    Text("Downloaded models appear automatically. Pic2PDF will load this model on demand for flashcard review without interrupting your primary vision model.")
                 }
                 
                 // Download Progress Section (shown when downloading)
@@ -325,7 +366,22 @@ struct SettingsView: View {
             } message: {
                 Text("Reset all LLM parameters to their default values?")
             }
+            .alert("HuggingFace Token", isPresented: $showTokenInfo) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("1. Go to huggingface.co and create a free account\n2. Go to Settings → Access Tokens\n3. Create a new token with 'read' permission\n4. Copy and paste the token here\n5. Accept the Gemma model license at huggingface.co/google/gemma-3n-E2B-it-litert-preview")
+            }
         }
+    }
+    
+    private var gradingModelSelection: Binding<ModelIdentifier> {
+        Binding(
+            get: { ModelIdentifier(rawValue: gradingModelIdentifierRaw) ?? .gemma270M },
+            set: { newValue in
+                gradingModelIdentifierRaw = newValue.rawValue
+                llmService.gradingPreferenceDidChange()
+            }
+        )
     }
     
     private func clearAllData() {

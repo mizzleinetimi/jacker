@@ -15,39 +15,20 @@ import Combine
 class StorageManager: ObservableObject {
     static let shared = StorageManager()
     
-    let modelContainer: ModelContainer
+    private let persistence = PersistenceController.shared
+    var modelContainer: ModelContainer { persistence.container }
     let modelContext: ModelContext
     
     @Published var generations: [Generation] = []
     @Published var favoriteGenerations: [Generation] = []
     
     private init() {
-        do {
-            let schema = Schema([
-                Generation.self,
-                RefinementEntry.self
-            ])
-            
-            let modelConfiguration = ModelConfiguration(
-                schema: schema,
-                isStoredInMemoryOnly: false
-            )
-            
-            modelContainer = try ModelContainer(
-                for: schema,
-                configurations: [modelConfiguration]
-            )
-            
-            modelContext = ModelContext(modelContainer)
-            
-            print("[Storage] StorageManager initialized successfully")
-            
-            // Load initial data
-            Task {
-                await loadGenerations()
-            }
-        } catch {
-            fatalError("Failed to create ModelContainer: \(error)")
+        modelContext = persistence.makeContext()
+        print("[Storage] StorageManager initialized successfully")
+        
+        // Load initial data
+        Task {
+            await loadGenerations()
         }
     }
     

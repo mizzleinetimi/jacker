@@ -15,8 +15,20 @@ struct DownloadableModelConfig {
     let expectedSizeMB: Double
     let checksum: String? // Optional SHA256 checksum for verification
     
-    // Cloudflare R2 - Production URLs
+    // Model download URLs
     static let availableModels: [ModelIdentifier: DownloadableModelConfig] = [
+        .gemma270M: DownloadableModelConfig(
+            identifier: .gemma270M,
+            downloadURL: URL(string: "https://huggingface.co/litert-community/gemma-3-270m-it/resolve/main/gemma3-270m-it-q8.task")!,
+            expectedSizeMB: 290.0, // ~290 MB - optimized grading/chat model (q8 quantization)
+            checksum: nil
+        ),
+        .gemma1B: DownloadableModelConfig(
+            identifier: .gemma1B,
+            downloadURL: URL(string: "https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4.task")!,
+            expectedSizeMB: 529.0, // ~529 MB - lightweight text-only model (requires HF token)
+            checksum: nil
+        ),
         .gemma2B: DownloadableModelConfig(
             identifier: .gemma2B,
             downloadURL: URL(string: "https://pub-69c747d5957f4104a2f87b0aca35a2af.r2.dev/gemma-3n-E2B-it-int4.task")!,
@@ -234,7 +246,14 @@ final class ModelDownloadManager: NSObject, ObservableObject {
                 task = urlSession!.downloadTask(withResumeData: resumeData)
                 self.resumeData = nil
             } else {
-                task = urlSession!.downloadTask(with: config.downloadURL)
+                // Create request with HuggingFace token if available and URL is from HuggingFace
+                var request = URLRequest(url: config.downloadURL)
+                if config.downloadURL.host?.contains("huggingface.co") == true,
+                   let token = UserDefaults.standard.string(forKey: "huggingFaceToken"), !token.isEmpty {
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    self.addLog("Using HuggingFace token for authentication", type: .info)
+                }
+                task = urlSession!.downloadTask(with: request)
             }
             
             downloadTask = task
@@ -277,12 +296,20 @@ final class ModelDownloadManager: NSObject, ObservableObject {
     private var downloadContinuation: CheckedContinuation<Void, Error>?
     
     private func hasEnoughDiskSpace(requiredBytes: Int64) -> Bool {
-        guard let attributes = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory()),
-              let freeSpace = attributes[.systemFreeSize] as? Int64 else {
-            return false
+        // Use volumeAvailableCapacityForImportantUsageKey for more accurate iOS storage reporting
+        let fileURL = URL(fileURLWithPath: NSHomeDirectory())
+        do {
+            let values = try fileURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+            // Try important usage first (more accurate on iOS), fallback to regular capacity
+            let freeSpace = values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
+            NSLog("[ModelDownload] Available space: \(freeSpace / (1024*1024)) MB, required: \(requiredBytes / (1024*1024)) MB")
+            // Keep 100MB buffer (reduced from 500MB)
+            return freeSpace > (requiredBytes + 100 * 1024 * 1024)
+        } catch {
+            NSLog("[ModelDownload] Error checking disk space: \(error)")
+            // If we can't check, allow the download to proceed
+            return true
         }
-        // Keep 500MB buffer
-        return freeSpace > (requiredBytes + 500 * 1024 * 1024)
     }
     
     private func calculateDownloadSpeed(bytesDownloaded: Int64) {
@@ -349,12 +376,28 @@ extension ModelDownloadManager: URLSessionDownloadDelegate {
                 try FileManager.default.removeItem(at: destination)
             }
             
-            // Get file size
+            // Get file size and validate
             let attributes = try FileManager.default.attributesOfItem(atPath: location.path)
             var fileSizeMB: Double = 0
             if let fileSize = attributes[.size] as? Int64 {
                 fileSizeMB = Double(fileSize) / (1024 * 1024)
                 NSLog("[ModelDownload] File size: \(fileSize) bytes (\(fileSizeMB) MB)")
+                
+                // Validate file size - should be at least 50% of expected size
+                if let config = DownloadableModelConfig.availableModels[identifier] {
+                    let minExpectedSize = config.expectedSizeMB * 0.5
+                    if fileSizeMB < minExpectedSize {
+                        NSLog("[ModelDownload] ERROR: Downloaded file too small (\(fileSizeMB) MB < \(minExpectedSize) MB expected)")
+                        Task { @MainActor in
+                            self.addLog("Download failed: File too small (\(String(format: "%.1f", fileSizeMB)) MB). Expected ~\(String(format: "%.0f", config.expectedSizeMB)) MB. The server may have returned an error page.", type: .error)
+                            self.downloadStatus = .failed(error: "Downloaded file is too small. Please try again.")
+                            self.currentDownloadingModel = nil
+                            self.downloadContinuation?.resume(throwing: ModelDownloadError.downloadFailed("File too small"))
+                            self.downloadContinuation = nil
+                        }
+                        return
+                    }
+                }
             }
             
             // Copy file IMMEDIATELY

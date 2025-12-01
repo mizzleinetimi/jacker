@@ -16,6 +16,8 @@ import CryptoKit
 
 /// Represents the available AI models optimized for image-to-LaTeX conversion
 public enum ModelIdentifier: String, CaseIterable, Identifiable {
+    case gemma1B = "gemma-3-1b-it-int4"  // Text-only, lightweight for chat
+    case gemma270M = "gemma3-270m-it-q8" // Ultra-lightweight text-only grader
     case gemma2B = "gemma-3n-E2B-it-int4"
     case gemma4B = "gemma-3n-E4B-it-int4"
 
@@ -24,8 +26,28 @@ public enum ModelIdentifier: String, CaseIterable, Identifiable {
 
     public var displayName: String {
         switch self {
+        case .gemma270M: return "Chat Model 270M (Text Only)"
+        case .gemma1B: return "Chat Model 1B (Text Only)"
         case .gemma2B: return "Vision Model 2B"
         case .gemma4B: return "Vision Model 4B"
+        }
+    }
+    
+    /// Whether this model supports vision/image input
+    public var supportsVision: Bool {
+        switch self {
+        case .gemma270M, .gemma1B: return false
+        case .gemma2B, .gemma4B: return true
+        }
+    }
+    
+    /// Minimum RAM required in GB
+    public var minimumRAMGB: Double {
+        switch self {
+        case .gemma270M: return 2.5
+        case .gemma1B: return 3.0
+        case .gemma2B: return 4.5
+        case .gemma4B: return 6.0
         }
     }
 
@@ -66,15 +88,47 @@ struct OnDeviceModel {
         
         guard let modelPath = sourceModelPath else {
             let errorMessage = "Model file '\(modelIdentifier.fileName)' not found. Please download the model first."
-            NSLog(errorMessage)
+            NSLog("[OnDeviceModel] ❌ \(errorMessage)")
+            NSLog("[OnDeviceModel] Checked downloaded path: \(downloadedModelPath.path)")
+            NSLog("[OnDeviceModel] Bundle path would be: \(modelIdentifier.rawValue).task")
             throw NSError(domain: "ModelSetupError", code: 1001, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        
+        // Verify model file size before loading
+        if let attributes = try? fileManager.attributesOfItem(atPath: modelPath),
+           let fileSize = attributes[.size] as? Int64 {
+            let fileSizeMB = Double(fileSize) / (1024 * 1024)
+            NSLog("Model file size: \(String(format: "%.1f", fileSizeMB)) MB")
+            
+            // Minimum expected sizes for each model
+            let minSizeMB: Double
+            switch modelIdentifier {
+            case .gemma270M:
+                minSizeMB = 150.0
+            case .gemma1B:
+                minSizeMB = 250.0
+            case .gemma2B:
+                minSizeMB = 2000.0
+            case .gemma4B:
+                minSizeMB = 3500.0
+            }
+            
+            if fileSizeMB < minSizeMB {
+                let errorMessage = "Model file is corrupted or incomplete (\(String(format: "%.1f", fileSizeMB)) MB). Please delete and re-download the model."
+                NSLog(errorMessage)
+                // Delete the corrupted file
+                try? fileManager.removeItem(atPath: modelPath)
+                throw NSError(domain: "ModelSetupError", code: 1002, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+            }
         }
 
         let modelCopyPath = cacheDir.appendingPathComponent(modelIdentifier.fileName)
 
         // Copy to cache if not already there or if source has been updated
         if !fileManager.fileExists(atPath: modelCopyPath.path) {
+            NSLog("Copying model to cache...")
             try fileManager.copyItem(atPath: modelPath, toPath: modelCopyPath.path)
+            NSLog("Model copied to cache successfully")
         }
 
         // Define vision component filenames within the .task archive
@@ -84,33 +138,43 @@ struct OnDeviceModel {
         let extractedVisionEncoderPath = cacheDir.appendingPathComponent(visionEncoderFileName)
         let extractedVisionAdapterPath = cacheDir.appendingPathComponent(visionAdapterFileName)
 
-        // Extract vision models if they don't exist
-        if !fileManager.fileExists(atPath: extractedVisionEncoderPath.path) ||
-           !fileManager.fileExists(atPath: extractedVisionAdapterPath.path) {
-            NSLog("Extracting vision models from .task file...")
-            do {
-                try OnDeviceModel.extractVisionModels(
-                    fromArchive: modelCopyPath,
-                    toDirectory: cacheDir,
-                    filesToExtract: [visionEncoderFileName, visionAdapterFileName]
-                )
-                NSLog("Successfully extracted vision models.")
-            } catch {
-                let extractionErrorMessage = "Error extracting vision components: \(error.localizedDescription)"
-                NSLog(extractionErrorMessage)
-                // Continue without vision components for now
+        // Only extract vision models for vision-capable models
+        if modelIdentifier.supportsVision {
+            // Extract vision models if they don't exist
+            if !fileManager.fileExists(atPath: extractedVisionEncoderPath.path) ||
+               !fileManager.fileExists(atPath: extractedVisionAdapterPath.path) {
+                NSLog("Extracting vision models from .task file...")
+                do {
+                    try OnDeviceModel.extractVisionModels(
+                        fromArchive: modelCopyPath,
+                        toDirectory: cacheDir,
+                        filesToExtract: [visionEncoderFileName, visionAdapterFileName]
+                    )
+                    NSLog("Successfully extracted vision models.")
+                } catch {
+                    let extractionErrorMessage = "Error extracting vision components: \(error.localizedDescription)"
+                    NSLog(extractionErrorMessage)
+                    // Continue without vision components for now
+                }
+            } else {
+                NSLog("Vision models already exist in cache.")
             }
         } else {
-            NSLog("Vision models already exist in cache.")
+            NSLog("Skipping vision extraction for text-only model: \(modelIdentifier.displayName)")
         }
 
         let options = LlmInference.Options(modelPath: modelCopyPath.path)
         options.maxTokens = maxTokens
 
-        // Configure for vision modality
-        options.visionEncoderPath = extractedVisionEncoderPath.path
-        options.visionAdapterPath = extractedVisionAdapterPath.path
-        options.maxImages = 5 // Support up to 5 images for document conversion
+        // Only configure vision modality for models that support it
+        if modelIdentifier.supportsVision {
+            options.visionEncoderPath = extractedVisionEncoderPath.path
+            options.visionAdapterPath = extractedVisionAdapterPath.path
+            options.maxImages = 5 // Support up to 5 images for document conversion
+            NSLog("Vision modality enabled for \(modelIdentifier.displayName)")
+        } else {
+            NSLog("Text-only mode for \(modelIdentifier.displayName)")
+        }
 
         inference = try LlmInference(options: options)
     }
@@ -226,12 +290,37 @@ final class OnDeviceLLMService: ObservableObject {
 
     // MARK: - Private Properties
     private let engine = LLMEngine()
+    private let gradingEngine = LLMEngine()
     private var cachedModelIdentifier: ModelIdentifier?
-    private var preferredModel: ModelIdentifier = .gemma2B
+    private var preferredModel: ModelIdentifier = OnDeviceLLMService.recommendedModel()
+    private var gradingModelIdentifier: ModelIdentifier?
     private var metricsTimer: Timer?
+    private let gradingPreferenceKey = "gradingModelIdentifier"
+    
+    /// Recommend model based on device RAM
+    private static func recommendedModel() -> ModelIdentifier {
+        let totalRAM = ProcessInfo.processInfo.physicalMemory
+        let totalRAMGB = Double(totalRAM) / (1024 * 1024 * 1024)
+        if totalRAMGB < 4.0 {
+            return .gemma1B  // Low RAM devices (iPhone 12 mini, etc.)
+        } else if totalRAMGB < 5.5 {
+            return .gemma2B  // Medium RAM devices
+        } else {
+            return .gemma2B  // Default to 2B even for high RAM
+        }
+    }
+    
+    private func preferredGradingModel() -> ModelIdentifier {
+        if let rawValue = UserDefaults.standard.string(forKey: gradingPreferenceKey),
+           let identifier = ModelIdentifier(rawValue: rawValue) {
+            return identifier
+        }
+        return .gemma270M
+    }
     private let signpostLog = OSLog(subsystem: "com.pic2pdf.app", category: "LLM")
     private var firstTokenLogged = false
     private var downscaledImageCache: [String: CGImage] = [:]
+    private var prewarmedSessions: [LLMEngine.SessionKey: LlmInference.Session] = [:]
 
     private var isPerformanceModeEnabled: Bool {
         return UserDefaults.standard.bool(forKey: "performanceModeEnabled")
@@ -324,13 +413,17 @@ final class OnDeviceLLMService: ObservableObject {
     }
 
     @MainActor
-    private func recordGenerationMetrics(inputImages: Int, outputTokens: Int, generationTime: TimeInterval, batteryBefore: Int) {
+    private func recordGenerationMetrics(inputImages: Int,
+                                         outputTokens: Int,
+                                         generationTime: TimeInterval,
+                                         batteryBefore: Int,
+                                         modelOverride: ModelIdentifier? = nil) {
         let tokensPerSecond = Double(outputTokens) / generationTime
         let memoryUsage = currentMemoryUsage
 
         let metrics = GenerationMetrics(
             timestamp: Date(),
-            modelIdentifier: preferredModel,
+            modelIdentifier: modelOverride ?? preferredModel,
             inputImageCount: inputImages,
             outputTokenCount: outputTokens,
             generationTime: generationTime,
@@ -363,6 +456,22 @@ final class OnDeviceLLMService: ObservableObject {
 
     /// Initializes the preferred AI model - can be called after model download completes
     func initializeModel() async {
+        // Check device RAM before attempting to load model
+        let totalRAM = ProcessInfo.processInfo.physicalMemory
+        let totalRAMGB = Double(totalRAM) / (1024 * 1024 * 1024)
+        NSLog("Device total RAM: \(String(format: "%.1f", totalRAMGB)) GB")
+        
+        // Use model-specific RAM requirements
+        let minimumRAMGB = preferredModel.minimumRAMGB
+        if totalRAMGB < minimumRAMGB {
+            await MainActor.run {
+                initializationError = "Your device has \(String(format: "%.1f", totalRAMGB))GB RAM. The \(preferredModel.displayName) model requires at least \(String(format: "%.1f", minimumRAMGB))GB RAM. Try the Chat Model 1B for devices with less memory."
+                isInitialized = false
+            }
+            NSLog("Insufficient RAM: \(totalRAMGB)GB < \(minimumRAMGB)GB required")
+            return
+        }
+        
         do {
             let startTime = Date()
             os_signpost(.begin, log: signpostLog, name: "ModelInit", "Model=%{public}@", preferredModel.displayName)
@@ -383,6 +492,8 @@ final class OnDeviceLLMService: ObservableObject {
 
             os_signpost(.end, log: signpostLog, name: "ModelInit")
             NSLog("AI model \(preferredModel.displayName) initialized in \(modelInitializationTime)s (perfMode=\(isPerformanceModeEnabled))")
+            
+            prewarmChatSession()
         } catch {
             await MainActor.run {
                 initializationError = "Failed to initialize on-device LLM: \(error.localizedDescription)"
@@ -421,6 +532,14 @@ final class OnDeviceLLMService: ObservableObject {
         // Initialize new model
         await initializeModel()
     }
+    
+    /// Clears cached grading sessions/models so the next grading request reloads with the new preference
+    func gradingPreferenceDidChange() {
+        gradingModelIdentifier = nil
+        Task {
+            await gradingEngine.resetSessions()
+        }
+    }
 
     // MARK: - LaTeX Generation
 
@@ -451,14 +570,14 @@ final class OnDeviceLLMService: ObservableObject {
 
         // Create a new session for this generation task using user settings
         // Performance mode can adjust parameters slightly for speed
-        let temp = isPerformanceModeEnabled ? min(userTemperature, 0.6) : userTemperature
-        let tP = isPerformanceModeEnabled ? min(userTopP, 0.95) : userTopP
-        let tK = isPerformanceModeEnabled ? max(userTopK, 60) : userTopK
+        var temp = isPerformanceModeEnabled ? min(userTemperature, 0.6) : userTemperature
+        var tP = isPerformanceModeEnabled ? min(userTopP, 0.95) : userTopP
+        var tK = isPerformanceModeEnabled ? max(userTopK, 60) : userTopK
+        (tK, tP, temp) = adaptParameters(topK: tK, topP: tP, temperature: temp)
         
         NSLog("[OnDeviceLLM] Creating vision-enabled session (perfMode=\(isPerformanceModeEnabled))")
         NSLog("[OnDeviceLLM] Parameters: temp=\(temp), topP=\(tP), topK=\(tK)")
-        let sessionHandle = try await engine.session(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: true))
-        let session = AIChatSession(session: sessionHandle)
+        let session = try await acquireSession(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: true))
         NSLog("[OnDeviceLLM] Session created with vision modality enabled")
 
         // Downscale images in parallel (Accelerate) for lower memory and faster vision path
@@ -627,14 +746,14 @@ final class OnDeviceLLMService: ObservableObject {
         }
 
         // Create a new session for refinement (text-only, no images) using user settings
-        let temp = isPerformanceModeEnabled ? min(userTemperature, 0.6) : userTemperature
-        let tP = isPerformanceModeEnabled ? min(userTopP, 0.95) : userTopP
-        let tK = isPerformanceModeEnabled ? max(userTopK, 60) : userTopK
+        var temp = isPerformanceModeEnabled ? min(userTemperature, 0.6) : userTemperature
+        var tP = isPerformanceModeEnabled ? min(userTopP, 0.95) : userTopP
+        var tK = isPerformanceModeEnabled ? max(userTopK, 60) : userTopK
+        (tK, tP, temp) = adaptParameters(topK: tK, topP: tP, temperature: temp)
         
         NSLog("[OnDeviceLLM] Creating text-only session for refinement")
         NSLog("[OnDeviceLLM] Parameters: temp=\(temp), topP=\(tP), topK=\(tK)")
-        let sessionHandle = try await engine.session(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: false))
-        let session = AIChatSession(session: sessionHandle)
+        let session = try await acquireSession(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: false))
 
         await MainActor.run {
             status.statusMessage = "Refining LaTeX with on-device AI..."
@@ -723,6 +842,7 @@ final class OnDeviceLLMService: ObservableObject {
 
         let startTime = Date()
         let batteryBefore = batteryLevel
+        let normalizedPrompt = optimizedChatPrompt(prompt)
 
         await MainActor.run {
             streamingLaTeX = "" // Reuse for streaming display
@@ -730,28 +850,28 @@ final class OnDeviceLLMService: ObservableObject {
         }
 
         // Create a text-only session for chat
-        let temp = userTemperature
-        let tP = userTopP
-        let tK = userTopK
+        let (tK, tP, temp) = fastChatParameters()
         
         NSLog("[OnDeviceLLM] Creating chat session")
-        let sessionHandle = try await engine.session(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: false))
-        let session = AIChatSession(session: sessionHandle)
+        let session = try await acquireSession(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: false))
 
         // Generate response with streaming
-        let stream = try await session.generateLaTeX(prompt: prompt)
+        let stream = try await session.generateLaTeX(prompt: normalizedPrompt)
         var fullResponse = ""
         let generationStartTime = Date()
         var lastUIUpdate = Date.distantPast
-        let promptTokenEstimate = (try? session.sizeInTokens(text: prompt)) ?? max(prompt.count / 4, 1)
+        let promptTokenEstimate = (try? session.sizeInTokens(text: normalizedPrompt)) ?? max(normalizedPrompt.count / 4, 1)
         let outputTokenLimit = computeOutputLimit(promptEstimate: promptTokenEstimate)
         var producedTokens = 0
+        let updateInterval = 1.0 / 15.0
 
+        NSLog("[OnDeviceLLM] Starting chat generation, output limit: \(outputTokenLimit)")
+        
         streamingLoop: for try await chunk in stream {
             fullResponse += chunk
 
             let now = Date()
-            if now.timeIntervalSince(lastUIUpdate) >= (1.0 / 30.0) {
+            if now.timeIntervalSince(lastUIUpdate) >= updateInterval {
                 let elapsedTime = now.timeIntervalSince(generationStartTime)
                 let estimatedTokens = max(fullResponse.count / 4, 1)
                 let tokensPerSec = elapsedTime > 0 ? Double(estimatedTokens) / elapsedTime : 0
@@ -765,12 +885,14 @@ final class OnDeviceLLMService: ObservableObject {
             
             producedTokens += max(chunk.count / 4, 1)
             if producedTokens >= outputTokenLimit {
+                NSLog("[OnDeviceLLM] Hit output limit at \(producedTokens) tokens")
                 break streamingLoop
             }
         }
 
         let endTime = Date()
         let generationTime = endTime.timeIntervalSince(startTime)
+        NSLog("[OnDeviceLLM] Chat response: '\(fullResponse.prefix(100))...' (\(fullResponse.count) chars)")
 
         // Estimate token count
         let estimatedTokens = (try? session.sizeInTokens(text: fullResponse)) ?? (fullResponse.count / 4)
@@ -785,6 +907,72 @@ final class OnDeviceLLMService: ObservableObject {
             )
         }
 
+        return fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    // MARK: - Flashcard Grading
+    
+    /// Generates a deterministic grading response using the dedicated grading model preference
+    func generateGradingResponse(prompt: String) async throws -> String {
+        NSLog("[OnDeviceLLM-Grading] Starting grading response generation...")
+        
+        let normalizedPrompt = optimizedChatPrompt(prompt)
+        let batteryBefore = batteryLevel
+        let startTime = Date()
+        
+        NSLog("[OnDeviceLLM-Grading] Initializing grading model...")
+        let gradingModel = try await ensureGradingModelInitialized()
+        NSLog("[OnDeviceLLM-Grading] Using model: \(gradingModel.displayName) (\(gradingModel.rawValue))")
+        
+        let (topK, topP, temp) = gradingChatParameters()
+        NSLog("[OnDeviceLLM-Grading] Parameters - topK: \(topK), topP: \(topP), temp: \(temp)")
+        
+        let key = makeSessionKey(topK: topK, topP: topP, temperature: temp, enableVision: false)
+        let session = try await acquireGradingSession(for: key)
+        
+        NSLog("[OnDeviceLLM-Grading] Session acquired, generating response...")
+        let stream = try await session.generateLaTeX(prompt: normalizedPrompt)
+        var fullResponse = ""
+        let promptTokenEstimate = (try? session.sizeInTokens(text: normalizedPrompt)) ?? max(normalizedPrompt.count / 4, 1)
+        // Grading only needs ~30-50 tokens for JSON response - keep it tight for speed
+        let outputTokenLimit = 100
+        var producedTokens = 0
+        
+        NSLog("[OnDeviceLLM-Grading] Prompt tokens ~\(promptTokenEstimate), output limit: \(outputTokenLimit)")
+        
+        for try await chunk in stream {
+            fullResponse += chunk
+            producedTokens += max(chunk.count / 4, 1)
+            
+            // Early termination: stop as soon as we have a complete JSON object
+            if fullResponse.contains("}") {
+                NSLog("[OnDeviceLLM-Grading] Complete JSON detected, stopping early")
+                break
+            }
+            
+            if producedTokens >= outputTokenLimit {
+                NSLog("[OnDeviceLLM-Grading] Hit output token limit (\(outputTokenLimit))")
+                break
+            }
+        }
+        
+        let generationTime = Date().timeIntervalSince(startTime)
+        let estimatedTokens = (try? session.sizeInTokens(text: fullResponse)) ?? (fullResponse.count / 4)
+        
+        NSLog("[OnDeviceLLM-Grading] Generation complete in \(String(format: "%.2f", generationTime))s")
+        NSLog("[OnDeviceLLM-Grading] Output tokens: ~\(estimatedTokens), chars: \(fullResponse.count)")
+        NSLog("[OnDeviceLLM-Grading] Tokens/sec: \(String(format: "%.1f", Double(estimatedTokens) / generationTime))")
+        
+        await MainActor.run {
+            recordGenerationMetrics(
+                inputImages: 0,
+                outputTokens: estimatedTokens,
+                generationTime: generationTime,
+                batteryBefore: batteryBefore,
+                modelOverride: gradingModel
+            )
+        }
+        
         return fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -844,6 +1032,169 @@ final class OnDeviceLLMService: ObservableObject {
     private func computeOutputLimit(promptEstimate: Int) -> Int {
         let remainingBudget = max(userMaxTokens - promptEstimate / 2, 128)
         return min(userMaxTokens, remainingBudget)
+    }
+    
+    private func adaptParameters(topK: Int, topP: Float, temperature: Float) -> (Int, Float, Float) {
+        var adjustedTopK = topK
+        var adjustedTopP = topP
+        var adjustedTemp = temperature
+        
+        switch thermalState {
+        case .serious, .critical:
+            adjustedTopK = min(adjustedTopK, 24)
+            adjustedTopP = min(adjustedTopP, 0.8)
+            adjustedTemp = min(adjustedTemp, 0.58)
+        case .fair:
+            adjustedTopK = min(adjustedTopK, 28)
+            adjustedTopP = min(adjustedTopP, 0.84)
+            adjustedTemp = min(adjustedTemp, 0.62)
+        default:
+            break
+        }
+        
+        if cpuUsage >= 85 {
+            adjustedTopK = min(adjustedTopK, 24)
+            adjustedTopP = min(adjustedTopP, 0.8)
+            adjustedTemp = min(adjustedTemp, 0.58)
+        } else if cpuUsage >= 70 {
+            adjustedTopK = min(adjustedTopK, 28)
+            adjustedTopP = min(adjustedTopP, 0.84)
+            adjustedTemp = min(adjustedTemp, 0.62)
+        }
+        
+        return (max(8, adjustedTopK), max(0.1, adjustedTopP), max(0.3, adjustedTemp))
+    }
+    
+    private func fastChatParameters() -> (Int, Float, Float) {
+        let baseTopK = min(userTopK, 40)
+        let baseTopP = min(userTopP, 0.9)
+        let baseTemp = min(userTemperature, 0.8)
+        
+        // 270M model needs higher temperature to produce output
+        // 1B model works better with lower temperature
+        let maxTemp: Float
+        let minTemp: Float
+        switch preferredModel {
+        case .gemma270M:
+            maxTemp = 0.9
+            minTemp = 0.6  // Don't go too low or it produces nothing
+        case .gemma1B:
+            maxTemp = 0.5
+            minTemp = 0.3
+        default:
+            maxTemp = 0.65
+            minTemp = 0.3
+        }
+        
+        let adjustedTemp = max(minTemp, min(baseTemp, maxTemp))
+        NSLog("[OnDeviceLLM] Chat params for \(preferredModel.displayName): temp=\(adjustedTemp)")
+        
+        return adaptParameters(
+            topK: min(baseTopK, 32),
+            topP: min(baseTopP, 0.85),
+            temperature: adjustedTemp
+        )
+    }
+    
+    private func gradingChatParameters() -> (Int, Float, Float) {
+        // Balance between speed and reliability
+        // Too low temp (0.3) causes empty responses with 1B model
+        let temp: Float = 0.5  // Higher temp to ensure output
+        let topK = 20          // More candidates for better output
+        let topP: Float = 0.85
+        return (topK, topP, temp)
+    }
+    
+    private func ensureGradingModelInitialized() async throws -> ModelIdentifier {
+        let desired = preferredGradingModel()
+        NSLog("[OnDeviceLLM-Grading] Preferred grading model: \(desired.displayName) (\(desired.rawValue))")
+        
+        // Check if model file exists
+        let downloadManager = ModelDownloadManager.shared
+        let modelPath = await MainActor.run { downloadManager.localModelPath(for: desired) }
+        let fileExists = FileManager.default.fileExists(atPath: modelPath.path)
+        NSLog("[OnDeviceLLM-Grading] Model file exists at \(modelPath.path): \(fileExists)")
+        
+        if !fileExists {
+            NSLog("[OnDeviceLLM-Grading] Model file not found! Checking if downloaded...")
+            let isDownloaded = await MainActor.run { downloadManager.isModelDownloaded(desired) }
+            NSLog("[OnDeviceLLM-Grading] isModelDownloaded(\(desired.rawValue)): \(isDownloaded)")
+        }
+        
+        if gradingModelIdentifier == desired,
+           let current = await gradingEngine.currentModelIdentifier(),
+           current == desired {
+            NSLog("[OnDeviceLLM-Grading] Reusing already initialized grading model: \(desired.displayName)")
+            return desired
+        }
+        
+        // Need enough tokens for prompt (~100) + output (~50) with buffer
+        let maxTokens = 512
+        NSLog("[OnDeviceLLM-Grading] Attempting to initialize \(desired.displayName) with maxTokens=\(maxTokens)")
+        
+        do {
+            let model = try await gradingEngine.initializeModel(identifier: desired, maxTokens: maxTokens)
+            gradingModelIdentifier = model.identifier
+            NSLog("[OnDeviceLLM-Grading] Successfully initialized \(model.identifier.displayName)")
+            return model.identifier
+        } catch {
+            NSLog("[OnDeviceLLM-Grading] ❌ Failed to initialize \(desired.displayName): \(error.localizedDescription)")
+            NSLog("[OnDeviceLLM-Grading] Full error: \(error)")
+            
+            if desired != .gemma1B {
+                NSLog("[OnDeviceLLM-Grading] Falling back to Chat Model 1B...")
+                // Don't persist the fallback - let user fix the issue
+                let fallbackModel = try await gradingEngine.initializeModel(identifier: .gemma1B, maxTokens: maxTokens)
+                gradingModelIdentifier = fallbackModel.identifier
+                NSLog("[OnDeviceLLM-Grading] Fallback successful: \(fallbackModel.identifier.displayName)")
+                return fallbackModel.identifier
+            }
+            throw error
+        }
+    }
+    
+    private func optimizedChatPrompt(_ prompt: String) -> String {
+        let collapsed = prompt
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if collapsed.count > 2000 {
+            let startIdx = collapsed.index(collapsed.endIndex, offsetBy: -2000)
+            return String(collapsed[startIdx...])
+        }
+        return collapsed
+    }
+    
+    private func prewarmChatSession() {
+        let (topK, topP, temp) = fastChatParameters()
+        let key = makeSessionKey(topK: topK, topP: topP, temperature: temp, enableVision: false)
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self = self else { return }
+            if let warmSession = try? await self.engine.session(for: key) {
+                await MainActor.run {
+                    self.prewarmedSessions[key] = warmSession
+                }
+            }
+        }
+    }
+    
+    @MainActor
+    private func takePrewarmedSession(for key: LLMEngine.SessionKey) -> LlmInference.Session? {
+        return prewarmedSessions.removeValue(forKey: key)
+    }
+    
+    private func acquireSession(for key: LLMEngine.SessionKey) async throws -> AIChatSession {
+        if let warm = await MainActor.run(body: { takePrewarmedSession(for: key) }) {
+            return AIChatSession(session: warm)
+        }
+        let handle = try await engine.session(for: key)
+        return AIChatSession(session: handle)
+    }
+    
+    private func acquireGradingSession(for key: LLMEngine.SessionKey) async throws -> AIChatSession {
+        // Always create fresh session - MediaPipe sessions accumulate context
+        // and will overflow if reused across multiple grading requests
+        let handle = try await gradingEngine.session(for: key)
+        return AIChatSession(session: handle)
     }
 
     private func imageCacheKey(for image: UIImage, maxDimension: Int) -> String? {
