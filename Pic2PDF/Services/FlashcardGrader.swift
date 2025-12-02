@@ -49,46 +49,58 @@ class FlashcardGrader {
         return result
     }
 
-    /// Simple prompt asking for YES/NO/PARTIAL
+    /// Semantic prompt asking for JSON output
     private func buildSimplePrompt(correctAnswer: String, userAnswer: String) -> String {
         return """
         <start_of_turn>user
-        Is this answer correct?
-        Expected: \(correctAnswer.prefix(200))
-        Given: \(userAnswer.prefix(200))
-        Reply only: YES, NO, or PARTIAL
+        Compare the meaning of the User Answer to the Correct Answer.
+        
+        Correct Answer: "\(correctAnswer)"
+        User Answer: "\(userAnswer)"
+        
+        Evaluate the user's understanding. Ignore minor typos or phrasing differences if the core meaning is correct.
+        
+        Output a JSON object with:
+        - "score": Integer 1 to 5 (1=Wrong, 3=Partially Correct, 5=Correct meaning)
+        - "feedback": A short explanation (max 15 words)
+        
+        Example: {"score": 5, "feedback": "Correct meaning."}
         <end_of_turn>
         <start_of_turn>model
         """
     }
 
-    /// Parse YES/NO/PARTIAL response
+    /// Parse JSON response
     private func parseSimpleResponse(_ response: String) -> GradeResult? {
-        let text = response.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Empty response - trigger fallback
-        if text.isEmpty { return nil }
-
-        // Check for YES indicators
-        if text.hasPrefix("YES") || text.contains("CORRECT") || text.contains("MATCH") || text.contains("RIGHT") {
-            return GradeResult(score: 5, verdict: "easy", feedback: "Correct!")
+        // clean markdown code blocks
+        var jsonString = response
+        if let start = jsonString.range(of: "{"), 
+           let end = jsonString.range(of: "}", options: .backwards),
+           start.lowerBound < end.upperBound {
+            jsonString = String(jsonString[start.lowerBound..<end.upperBound])
+        } else {
+            return nil
         }
-
-        // Check for NO indicators
-        if text.hasPrefix("NO") || text.contains("WRONG") || text.contains("INCORRECT") {
-            return GradeResult(score: 1, verdict: "again", feedback: "Review needed.")
+        
+        guard let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let score = json["score"] as? Int else {
+            return nil
         }
-
-        // Check for PARTIAL indicators
-        if text.hasPrefix("PARTIAL") || text.contains("CLOSE") || text.contains("ALMOST") || text.contains("SIMILAR") {
-            return GradeResult(score: 3, verdict: "good", feedback: "Mostly correct.")
+        
+        let feedback = (json["feedback"] as? String) ?? "Graded by AI"
+        
+        // Map 1-5 score to verdict
+        let verdict: String
+        switch score {
+        case 5: verdict = "easy"
+        case 4: verdict = "good"
+        case 3: verdict = "good"  // Partial credit is good
+        case 2: verdict = "hard"
+        default: verdict = "again"
         }
-
-        // Loose check - if contains YES/NO anywhere
-        if text.contains("YES") { return GradeResult(score: 5, verdict: "easy", feedback: "Correct!") }
-        if text.contains("NO") { return GradeResult(score: 1, verdict: "again", feedback: "Review needed.") }
-
-        return nil // Trigger fallback
+        
+        return GradeResult(score: score, verdict: verdict, feedback: feedback)
     }
 
     /// Similarity-based grading fallback

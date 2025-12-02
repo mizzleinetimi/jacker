@@ -305,8 +305,10 @@ final class OnDeviceLLMService: ObservableObject {
             return .gemma1B  // Low RAM devices (iPhone 12 mini, etc.)
         } else if totalRAMGB < 5.5 {
             return .gemma2B  // Medium RAM devices
+        } else if totalRAMGB > 7.5 {
+            return .gemma4B  // High RAM devices (8GB+ like iPhone 15 Pro, M1/M2 iPads)
         } else {
-            return .gemma2B  // Default to 2B even for high RAM
+            return .gemma2B  // Default to 2B for 6GB devices
         }
     }
     
@@ -315,7 +317,7 @@ final class OnDeviceLLMService: ObservableObject {
            let identifier = ModelIdentifier(rawValue: rawValue) {
             return identifier
         }
-        return .gemma270M
+        return preferredModel // Default to the main model (which adapts to RAM)
     }
     private let signpostLog = OSLog(subsystem: "com.pic2pdf.app", category: "LLM")
     private var firstTokenLogged = false
@@ -912,66 +914,41 @@ final class OnDeviceLLMService: ObservableObject {
     
     // MARK: - Flashcard Grading
     
-    /// Generates a deterministic grading response using the dedicated grading model preference
+    /// Generates a grading response using the currently selected model
     func generateGradingResponse(prompt: String) async throws -> String {
-        NSLog("[OnDeviceLLM-Grading] Starting grading response generation...")
+        guard isReady() else {
+            throw OnDeviceLLMError.notInitialized
+        }
+        
+        NSLog("[OnDeviceLLM-Grading] Using model: \(selectedModel.displayName)")
+        
+        // Use the main chat response with early termination for JSON
+        let startTime = Date()
+        var fullResponse = ""
         
         let normalizedPrompt = optimizedChatPrompt(prompt)
-        let batteryBefore = batteryLevel
-        let startTime = Date()
+        let (tK, tP, temp) = fastChatParameters()
+        let session = try await acquireSession(for: makeSessionKey(topK: tK, topP: tP, temperature: temp, enableVision: false))
         
-        NSLog("[OnDeviceLLM-Grading] Initializing grading model...")
-        let gradingModel = try await ensureGradingModelInitialized()
-        NSLog("[OnDeviceLLM-Grading] Using model: \(gradingModel.displayName) (\(gradingModel.rawValue))")
-        
-        let (topK, topP, temp) = gradingChatParameters()
-        NSLog("[OnDeviceLLM-Grading] Parameters - topK: \(topK), topP: \(topP), temp: \(temp)")
-        
-        let key = makeSessionKey(topK: topK, topP: topP, temperature: temp, enableVision: false)
-        let session = try await acquireGradingSession(for: key)
-        
-        NSLog("[OnDeviceLLM-Grading] Session acquired, generating response...")
         let stream = try await session.generateLaTeX(prompt: normalizedPrompt)
-        var fullResponse = ""
-        let promptTokenEstimate = (try? session.sizeInTokens(text: normalizedPrompt)) ?? max(normalizedPrompt.count / 4, 1)
-        // Grading only needs ~30-50 tokens for JSON response - keep it tight for speed
-        let outputTokenLimit = 100
+        let outputTokenLimit = 100 // Short response for grading
         var producedTokens = 0
-        
-        NSLog("[OnDeviceLLM-Grading] Prompt tokens ~\(promptTokenEstimate), output limit: \(outputTokenLimit)")
         
         for try await chunk in stream {
             fullResponse += chunk
             producedTokens += max(chunk.count / 4, 1)
             
-            // Early termination: stop as soon as we have a complete JSON object
+            // Early termination when JSON is complete
             if fullResponse.contains("}") {
-                NSLog("[OnDeviceLLM-Grading] Complete JSON detected, stopping early")
                 break
             }
-            
             if producedTokens >= outputTokenLimit {
-                NSLog("[OnDeviceLLM-Grading] Hit output token limit (\(outputTokenLimit))")
                 break
             }
         }
         
-        let generationTime = Date().timeIntervalSince(startTime)
-        let estimatedTokens = (try? session.sizeInTokens(text: fullResponse)) ?? (fullResponse.count / 4)
-        
-        NSLog("[OnDeviceLLM-Grading] Generation complete in \(String(format: "%.2f", generationTime))s")
-        NSLog("[OnDeviceLLM-Grading] Output tokens: ~\(estimatedTokens), chars: \(fullResponse.count)")
-        NSLog("[OnDeviceLLM-Grading] Tokens/sec: \(String(format: "%.1f", Double(estimatedTokens) / generationTime))")
-        
-        await MainActor.run {
-            recordGenerationMetrics(
-                inputImages: 0,
-                outputTokens: estimatedTokens,
-                generationTime: generationTime,
-                batteryBefore: batteryBefore,
-                modelOverride: gradingModel
-            )
-        }
+        let elapsed = Date().timeIntervalSince(startTime)
+        NSLog("[OnDeviceLLM-Grading] Response in \(String(format: "%.1f", elapsed))s: \(fullResponse.prefix(50))...")
         
         return fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -1190,10 +1167,11 @@ final class OnDeviceLLMService: ObservableObject {
         return AIChatSession(session: handle)
     }
     
-    private func acquireGradingSession(for key: LLMEngine.SessionKey) async throws -> AIChatSession {
+    private func acquireGradingSession(for key: LLMEngine.SessionKey, useMainEngine: Bool) async throws -> AIChatSession {
         // Always create fresh session - MediaPipe sessions accumulate context
         // and will overflow if reused across multiple grading requests
-        let handle = try await gradingEngine.session(for: key)
+        let targetEngine = useMainEngine ? engine : gradingEngine
+        let handle = try await targetEngine.session(for: key)
         return AIChatSession(session: handle)
     }
 

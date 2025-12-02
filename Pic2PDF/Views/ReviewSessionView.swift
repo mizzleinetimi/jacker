@@ -34,27 +34,40 @@ struct ReviewSessionView: View {
     var body: some View {
         NavigationStack {
             ZStack {
+                Theme.background
+                    .ignoresSafeArea()
+                
                 if showingSummary {
                     summaryView
                 } else if let card = currentCard {
-                    if showingFeedback {
-                        feedbackView(card: card)
-                    } else {
-                        questionView(card: card)
+                    VStack(spacing: 0) {
+                        // Progress Bar
+                        ProgressView(value: progress)
+                            .tint(Theme.accent)
+                            .padding(.horizontal)
+                            .padding(.top, 8)
+                        
+                        if showingFeedback {
+                            feedbackView(card: card)
+                                .transition(.move(edge: .trailing))
+                        } else {
+                            questionView(card: card)
+                                .transition(.move(edge: .leading))
+                        }
                     }
+                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: showingFeedback)
                 } else {
                     Text("No cards to review")
+                        .font(Theme.uiFont(size: 18))
+                        .foregroundColor(Theme.secondaryText)
                 }
             }
             .navigationTitle("Review")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("End") { dismiss() }
-                }
-                ToolbarItem(placement: .principal) {
-                    ProgressView(value: progress)
-                        .frame(width: 100)
+                    Button("End Session") { dismiss() }
+                        .foregroundColor(Theme.secondaryText)
                 }
             }
         }
@@ -66,69 +79,75 @@ struct ReviewSessionView: View {
     // MARK: - Question View
     
     private func questionView(card: Flashcard) -> some View {
-        VStack(spacing: 0) {
-            // Progress
-            HStack {
-                Text("Card \(currentIndex + 1) of \(dueCards.count)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Spacer()
-            }
-            .padding()
-            
+        VStack(spacing: 24) {
             Spacer()
             
-            // Question
-            VStack(spacing: 16) {
-                Text("Question")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            // Question Card
+            VStack(spacing: 20) {
+                Text("QUESTION")
+                    .font(Theme.uiFont(size: 12, weight: .bold))
+                    .foregroundColor(Theme.secondaryText)
+                    .tracking(2)
                 
                 Text(card.front)
-                    .font(.title2)
-                    .fontWeight(.medium)
+                    .font(Theme.uiFont(size: 24, weight: .semibold))
+                    .foregroundColor(Theme.text)
                     .multilineTextAlignment(.center)
-                    .padding()
+                    .padding(.horizontal)
             }
-            .padding()
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 40)
+            .background(Theme.secondaryBackground)
+            .cornerRadius(24)
+            .calmShadow()
+            .padding(.horizontal, 24)
             
             Spacer()
             
-            // Answer input
+            // Input Area
             VStack(spacing: 16) {
-                Text("Your Answer")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
                 TextEditor(text: $userAnswer)
-                    .frame(height: 120)
-                    .padding(8)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
+                    .frame(height: 100)
+                    .padding(16)
+                    .background(Theme.secondaryBackground)
+                    .cornerRadius(16)
+                    .calmShadow()
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color(.systemGray4), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Theme.accent.opacity(0.1), lineWidth: 1)
                     )
+                    .overlay(alignment: .topLeading) {
+                        if userAnswer.isEmpty {
+                            Text("Type your answer...")
+                                .font(Theme.uiFont(size: 16))
+                                .foregroundColor(Theme.secondaryText.opacity(0.5))
+                                .padding(20)
+                                .allowsHitTesting(false)
+                        }
+                    }
                 
                 Button(action: gradeAnswer) {
-                    if isGrading {
-                        HStack {
+                    HStack {
+                        if isGrading {
                             ProgressView()
                                 .tint(.white)
-                            Text("Grading...")
+                                .padding(.trailing, 8)
+                            Text("Checking...")
+                        } else {
+                            Text("Check Answer")
                         }
-                    } else {
-                        Text("Check Answer")
                     }
+                    .font(Theme.uiFont(size: 18, weight: .bold))
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(userAnswer.isEmpty ? Color.gray.opacity(0.3) : Theme.accent)
+                    .foregroundColor(.white)
+                    .cornerRadius(16)
+                    .calmShadow()
                 }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(userAnswer.isEmpty ? Color.gray : Color.blue)
-                .foregroundColor(.white)
-                .cornerRadius(12)
-                .disabled(isGrading)
+                .disabled(isGrading || userAnswer.isEmpty)
             }
-            .padding()
+            .padding(24)
         }
     }
     
@@ -137,154 +156,210 @@ struct ReviewSessionView: View {
     private func feedbackView(card: Flashcard) -> some View {
         ScrollView {
             VStack(spacing: 24) {
-                // Verdict badge
+                // Verdict Header
                 if let result = currentResult {
-                    VerdictBadge(verdict: result.reviewVerdict)
+                    HStack {
+                        Text(result.reviewVerdict.emoji)
+                            .font(.system(size: 40))
+                        
+                        VStack(alignment: .leading) {
+                            Text(result.reviewVerdict.rawValue.capitalized)
+                                .font(Theme.uiFont(size: 24, weight: .bold))
+                                .foregroundColor(verdictColor(for: result.reviewVerdict))
+                            
+                            Text("Score: \(result.score)/5")
+                                .font(Theme.uiFont(size: 14))
+                                .foregroundColor(Theme.secondaryText)
+                        }
+                        
+                        Spacer()
+                    }
+                    .padding()
+                    .background(verdictColor(for: result.reviewVerdict).opacity(0.1))
+                    .cornerRadius(20)
                 }
                 
-                // Question
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Question")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text(card.front)
-                        .font(.headline)
+                // Comparison
+                VStack(spacing: 0) {
+                    // Correct Answer
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("CORRECT ANSWER")
+                            .font(Theme.uiFont(size: 12, weight: .bold))
+                            .foregroundColor(.green)
+                            .tracking(1)
+                        
+                        Text(card.back)
+                            .font(Theme.uiFont(size: 16))
+                            .foregroundColor(Theme.text)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+                    .background(Color.green.opacity(0.05))
+                    
+                    Divider()
+                    
+                    // User Answer
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("YOUR ANSWER")
+                            .font(Theme.uiFont(size: 12, weight: .bold))
+                            .foregroundColor(Theme.secondaryText)
+                            .tracking(1)
+                        
+                        Text(userAnswer.isEmpty ? "(No answer provided)" : userAnswer)
+                            .font(Theme.uiFont(size: 16))
+                            .foregroundColor(Theme.text)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+                    .background(Theme.secondaryBackground)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(Color(.systemGray6))
-                .cornerRadius(12)
-                
-                // Correct answer
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Correct Answer")
-                        .font(.caption)
-                        .foregroundColor(.green)
-                    Text(card.back)
-                        .font(.body)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(Color.green.opacity(0.1))
-                .cornerRadius(12)
-                
-                // User's answer
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Your Answer")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text(userAnswer.isEmpty ? "(no answer)" : userAnswer)
-                        .font(.body)
-                        .foregroundColor(userAnswer.isEmpty ? .secondary : .primary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(Color(.systemGray6))
-                .cornerRadius(12)
+                .cornerRadius(20)
+                .calmShadow()
                 
                 // AI Feedback
                 if let result = currentResult {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Image(systemName: "sparkles")
+                    HStack(alignment: .top, spacing: 16) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 24))
+                            .foregroundColor(.purple)
+                            .padding(12)
+                            .background(Color.purple.opacity(0.1))
+                            .clipShape(Circle())
+                        
+                        VStack(alignment: .leading, spacing: 8) {
                             Text("AI Feedback")
+                                .font(Theme.uiFont(size: 14, weight: .bold))
+                                .foregroundColor(.purple)
+                            
+                            Text(result.feedback)
+                                .font(Theme.uiFont(size: 16))
+                                .foregroundColor(Theme.text)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .font(.caption)
-                        .foregroundColor(.purple)
-                        
-                        Text(result.feedback)
-                            .font(.body)
-                        
-                        Text("Score: \(result.score)/5")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                    .background(Color.purple.opacity(0.1))
-                    .cornerRadius(12)
+                    .padding(20)
+                    .background(Theme.secondaryBackground)
+                    .cornerRadius(20)
+                    .calmShadow()
                 }
                 
-                Spacer(minLength: 20)
-                
-                // Next button
-                Button(action: nextCard) {
-                    Text(currentIndex < dueCards.count - 1 ? "Next Card" : "Finish")
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                }
-                
-                // Override buttons
-                if currentResult != nil {
-                    HStack(spacing: 12) {
-                        Text("Override:")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        
-                        ForEach([ReviewVerdict.again, .hard, .good, .easy], id: \.self) { verdict in
-                            Button(verdict.emoji) {
-                                overrideVerdict(verdict)
+                // Actions
+                VStack(spacing: 16) {
+                    Button(action: nextCard) {
+                        Text(currentIndex < dueCards.count - 1 ? "Next Card" : "Finish Review")
+                            .font(Theme.uiFont(size: 18, weight: .bold))
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Theme.accent)
+                            .foregroundColor(.white)
+                            .cornerRadius(16)
+                            .calmShadow()
+                    }
+                    
+                    if currentResult != nil {
+                        Menu {
+                            ForEach([ReviewVerdict.again, .hard, .good, .easy], id: \.self) { verdict in
+                                Button {
+                                    overrideVerdict(verdict)
+                                } label: {
+                                    Label(verdict.rawValue.capitalized, systemImage: verdict == .easy ? "star.fill" : "circle")
+                                }
                             }
-                            .padding(8)
-                            .background(Color(.systemGray5))
-                            .cornerRadius(8)
+                        } label: {
+                            Text("Override Grade")
+                                .font(Theme.uiFont(size: 14, weight: .medium))
+                                .foregroundColor(Theme.secondaryText)
                         }
                     }
                 }
+                .padding(.top, 10)
             }
-            .padding()
+            .padding(24)
         }
     }
     
     // MARK: - Summary View
     
     private var summaryView: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 60))
-                .foregroundColor(.green)
-            
-            Text("Session Complete! 🎉")
-                .font(.title)
-                .fontWeight(.bold)
+        VStack(spacing: 32) {
+            Spacer()
             
             VStack(spacing: 16) {
-                StatRow(label: "Cards Reviewed", value: "\(sessionStats.totalReviewed)")
-                StatRow(label: "Average Score", value: String(format: "%.1f/5", sessionStats.averageScore))
+                ZStack {
+                    Circle()
+                        .fill(Color.green.opacity(0.1))
+                        .frame(width: 100, height: 100)
+                    
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 40, weight: .bold))
+                        .foregroundColor(.green)
+                }
                 
-                HStack(spacing: 20) {
-                    MiniStat(emoji: "🔴", count: sessionStats.againCount)
-                    MiniStat(emoji: "🟠", count: sessionStats.hardCount)
-                    MiniStat(emoji: "🟢", count: sessionStats.goodCount)
-                    MiniStat(emoji: "🔵", count: sessionStats.easyCount)
+                Text("Session Complete!")
+                    .font(Theme.uiFont(size: 28, weight: .bold))
+                    .foregroundColor(Theme.text)
+                
+                Text("You reviewed \(sessionStats.totalReviewed) cards")
+                    .font(Theme.uiFont(size: 16))
+                    .foregroundColor(Theme.secondaryText)
+            }
+            
+            VStack(spacing: 20) {
+                HStack(spacing: 40) {
+                    VStack {
+                        Text("\(Int(sessionStats.averageScore * 20))%")
+                            .font(Theme.uiFont(size: 32, weight: .bold))
+                            .foregroundColor(Theme.accent)
+                        Text("Accuracy")
+                            .font(Theme.uiFont(size: 12))
+                            .foregroundColor(Theme.secondaryText)
+                    }
+                    
+                    VStack {
+                        Text("\(sessionStats.goodCount + sessionStats.easyCount)")
+                            .font(Theme.uiFont(size: 32, weight: .bold))
+                            .foregroundColor(.green)
+                        Text("Correct")
+                            .font(Theme.uiFont(size: 12))
+                            .foregroundColor(Theme.secondaryText)
+                    }
+                }
+                
+                Divider()
+                
+                HStack(spacing: 12) {
+                    ResultPill(emoji: "🔴", count: sessionStats.againCount, label: "Again")
+                    ResultPill(emoji: "🟠", count: sessionStats.hardCount, label: "Hard")
+                    ResultPill(emoji: "🟢", count: sessionStats.goodCount, label: "Good")
+                    ResultPill(emoji: "🔵", count: sessionStats.easyCount, label: "Easy")
                 }
             }
-            .padding()
-            .background(Color(.systemGray6))
-            .cornerRadius(16)
+            .padding(24)
+            .background(Theme.secondaryBackground)
+            .cornerRadius(24)
+            .calmShadow()
+            .padding(.horizontal, 24)
             
             Spacer()
             
             Button(action: { dismiss() }) {
                 Text("Back to Deck")
+                    .font(Theme.uiFont(size: 18, weight: .bold))
                     .frame(maxWidth: .infinity)
                     .padding()
-                    .background(Color.blue)
+                    .background(Theme.accent)
                     .foregroundColor(.white)
-                    .cornerRadius(12)
+                    .cornerRadius(16)
+                    .calmShadow()
             }
+            .padding(24)
         }
-        .padding()
     }
     
-    // MARK: - Actions
+    // MARK: - Logic
     
     private func gradeAnswer() {
         guard let card = currentCard else { return }
-        
         isGrading = true
         
         Task {
@@ -294,16 +369,12 @@ struct ReviewSessionView: View {
                     correctAnswer: card.back,
                     userAnswer: userAnswer
                 )
-                
                 currentResult = result
                 applyResult(result.reviewVerdict, to: card)
-                
             } catch {
-                // Fallback to "hard" on error
                 currentResult = GradeResult(score: 2, verdict: "hard", feedback: "Could not grade - marked as hard.")
                 applyResult(.hard, to: card)
             }
-            
             isGrading = false
             showingFeedback = true
         }
@@ -327,7 +398,6 @@ struct ReviewSessionView: View {
     private func overrideVerdict(_ verdict: ReviewVerdict) {
         guard let card = currentCard, let oldResult = currentResult else { return }
         
-        // Undo old verdict stats
         switch oldResult.reviewVerdict {
         case .again: sessionStats.againCount -= 1
         case .hard: sessionStats.hardCount -= 1
@@ -335,7 +405,6 @@ struct ReviewSessionView: View {
         case .easy: sessionStats.easyCount -= 1
         }
         
-        // Apply new verdict
         card.applyReview(verdict: verdict)
         manager.saveChanges()
         
@@ -359,27 +428,8 @@ struct ReviewSessionView: View {
             showingSummary = true
         }
     }
-}
-
-// MARK: - Supporting Views
-
-struct VerdictBadge: View {
-    let verdict: ReviewVerdict
     
-    var body: some View {
-        HStack {
-            Text(verdict.emoji)
-            Text(verdict.rawValue.capitalized)
-                .fontWeight(.semibold)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-        .background(verdictColor.opacity(0.2))
-        .foregroundColor(verdictColor)
-        .cornerRadius(20)
-    }
-    
-    private var verdictColor: Color {
+    private func verdictColor(for verdict: ReviewVerdict) -> Color {
         switch verdict {
         case .again: return .red
         case .hard: return .orange
@@ -389,32 +439,24 @@ struct VerdictBadge: View {
     }
 }
 
-struct StatRow: View {
-    let label: String
-    let value: String
-    
-    var body: some View {
-        HStack {
-            Text(label)
-                .foregroundColor(.secondary)
-            Spacer()
-            Text(value)
-                .fontWeight(.semibold)
-        }
-    }
-}
-
-struct MiniStat: View {
+struct ResultPill: View {
     let emoji: String
     let count: Int
+    let label: String
     
     var body: some View {
-        VStack {
+        VStack(spacing: 4) {
             Text(emoji)
             Text("\(count)")
-                .font(.caption)
-                .fontWeight(.bold)
+                .font(Theme.uiFont(size: 16, weight: .bold))
+            Text(label)
+                .font(Theme.uiFont(size: 10))
+                .foregroundColor(Theme.secondaryText)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Theme.background)
+        .cornerRadius(12)
     }
 }
 

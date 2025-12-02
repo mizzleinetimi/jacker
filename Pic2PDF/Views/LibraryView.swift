@@ -19,13 +19,21 @@ struct LibraryView: View {
     @State private var errorMessage: String?
     @State private var showError = false
     
+    // Grid layout
+    private let columns = [
+        GridItem(.adaptive(minimum: 160), spacing: 20)
+    ]
+    
     var body: some View {
         NavigationStack {
             ZStack {
+                Theme.background
+                    .ignoresSafeArea()
+                
                 if documentManager.documents.isEmpty {
                     emptyState
                 } else {
-                    documentList
+                    documentGrid
                 }
                 
                 // Processing overlay
@@ -33,12 +41,18 @@ struct LibraryView: View {
                     processingOverlay
                 }
             }
-            .navigationTitle("My Library")
+            .navigationTitle("Library")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { showImportOptions = true }) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
+                        Image(systemName: "plus")
+                            .font(Theme.uiFont(size: 20, weight: .medium))
+                            .foregroundColor(Theme.accent)
+                            .frame(width: 40, height: 40)
+                            .background(Theme.secondaryBackground)
+                            .clipShape(Circle())
+                            .calmShadow()
                     }
                     .disabled(documentManager.isProcessing)
                 }
@@ -81,71 +95,86 @@ struct LibraryView: View {
     
     private var emptyState: some View {
         VStack(spacing: 24) {
+            Spacer()
+            
             Image(systemName: "books.vertical")
-                .font(.system(size: 80))
-                .foregroundColor(.gray)
+                .font(.system(size: 60))
+                .foregroundColor(Theme.secondaryText.opacity(0.5))
             
-            Text("No Documents Yet")
-                .font(.title2)
-                .fontWeight(.semibold)
-            
-            Text("Import a PDF or photos of your notes to get started")
-                .font(.body)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+            VStack(spacing: 8) {
+                Text("Your Library is Empty")
+                    .font(Theme.uiFont(size: 20, weight: .semibold))
+                    .foregroundColor(Theme.text)
+                
+                Text("Import documents to start reading")
+                    .font(Theme.uiFont(size: 16))
+                    .foregroundColor(Theme.secondaryText)
+            }
             
             Button(action: { showImportOptions = true }) {
-                Label("Import Content", systemImage: "plus.circle.fill")
-                    .font(.headline)
-                    .padding()
-                    .background(Color.blue)
+                Text("Import Content")
+                    .font(Theme.uiFont(size: 16, weight: .medium))
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 12)
+                    .background(Theme.accent)
                     .foregroundColor(.white)
-                    .cornerRadius(12)
+                    .cornerRadius(24)
+                    .calmShadow()
             }
+            .padding(.top, 16)
+            
+            Spacer()
         }
     }
     
-    // MARK: - Document List
+    // MARK: - Document Grid
     
-    private var documentList: some View {
-        List {
-            ForEach(documentManager.documents, id: \.id) { document in
-                DocumentRow(document: document)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        selectedDocument = document
-                    }
+    private var documentGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 20) {
+                ForEach(documentManager.documents, id: \.id) { document in
+                    DocumentCard(document: document)
+                        .onTapGesture {
+                            selectedDocument = document
+                        }
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                documentManager.deleteDocument(document)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                }
             }
-            .onDelete(perform: deleteDocuments)
+            .padding(20)
         }
-        .listStyle(.plain)
     }
     
     // MARK: - Processing Overlay
     
     private var processingOverlay: some View {
         ZStack {
-            Color.black.opacity(0.5)
+            Color.black.opacity(0.3)
                 .ignoresSafeArea()
             
             VStack(spacing: 20) {
                 ProgressView()
-                    .scaleEffect(1.5)
-                    .tint(.white)
+                    .scaleEffect(1.2)
+                    .tint(Theme.text)
                 
                 Text(documentManager.processingStatus)
-                    .font(.headline)
-                    .foregroundColor(.white)
+                    .font(Theme.uiFont(size: 16, weight: .medium))
+                    .foregroundColor(Theme.text)
                 
                 ProgressView(value: documentManager.processingProgress)
                     .progressViewStyle(.linear)
-                    .tint(.white)
-                    .frame(width: 200)
+                    .tint(Theme.accent)
+                    .frame(width: 180)
             }
-            .padding(40)
-            .background(Color(.systemGray6).opacity(0.9))
+            .padding(32)
+            .background(Theme.secondaryBackground)
             .cornerRadius(20)
+            .calmShadow()
         }
     }
     
@@ -212,64 +241,73 @@ struct LibraryView: View {
             showError = true
         }
     }
-    
-    private func deleteDocuments(at offsets: IndexSet) {
-        for index in offsets {
-            documentManager.deleteDocument(documentManager.documents[index])
-        }
-    }
 }
 
-// MARK: - Document Row
+// MARK: - Document Card
 
-struct DocumentRow: View {
+struct DocumentCard: View {
     let document: Document
     
     var body: some View {
-        HStack(spacing: 16) {
-            // Icon
+        VStack(alignment: .leading, spacing: 0) {
+            // Thumbnail / Icon Area
             ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(document.sourceType == "pdf" ? Color.red.opacity(0.2) : Color.blue.opacity(0.2))
-                    .frame(width: 50, height: 50)
+                Rectangle()
+                    .fill(document.sourceType == "pdf" ? Color.red.opacity(0.05) : Color.blue.opacity(0.05))
                 
-                Image(systemName: document.sourceType == "pdf" ? "doc.fill" : "photo.stack.fill")
-                    .font(.title2)
-                    .foregroundColor(document.sourceType == "pdf" ? .red : .blue)
+                Image(systemName: document.sourceType == "pdf" ? "doc.text.fill" : "photo.stack.fill")
+                    .font(.system(size: 32))
+                    .foregroundColor(document.sourceType == "pdf" ? .red.opacity(0.5) : .blue.opacity(0.5))
             }
+            .frame(height: 110)
+            .clipped()
             
-            // Info
-            VStack(alignment: .leading, spacing: 4) {
+            // Info Area
+            VStack(alignment: .leading, spacing: 8) {
                 Text(document.title)
-                    .font(.headline)
-                    .lineLimit(1)
+                    .font(Theme.uiFont(size: 16, weight: .semibold))
+                    .foregroundColor(Theme.text)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(height: 44, alignment: .topLeading) // Fixed height for alignment
                 
-                Text("\(document.totalCards) cards")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                // Progress bar
-                if document.lastReadCardIndex > 0 {
-                    ProgressView(value: document.progress)
-                        .tint(.green)
-                }
-            }
-            
-            Spacer()
-            
-            // Continue indicator
-            if document.lastReadAt != nil {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("Card \(document.lastReadCardIndex + 1)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                HStack {
+                    Text("\(document.totalCards) cards")
+                        .font(Theme.uiFont(size: 12))
+                        .foregroundColor(Theme.secondaryText)
                     
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    Spacer()
+                    
+                    if document.lastReadCardIndex > 0 {
+                        Text("\(Int(document.progress * 100))%")
+                            .font(Theme.uiFont(size: 12, weight: .medium))
+                            .foregroundColor(Theme.accent)
+                    }
+                }
+                
+                // Progress Bar
+                if document.lastReadCardIndex > 0 {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(Color.gray.opacity(0.1))
+                                .frame(height: 4)
+                            
+                            Capsule()
+                                .fill(Theme.accent)
+                                .frame(width: geo.size.width * document.progress, height: 4)
+                        }
+                    }
+                    .frame(height: 4)
+                } else {
+                    // Placeholder to keep height consistent
+                    Color.clear.frame(height: 4)
                 }
             }
+            .padding(16)
+            .background(Theme.secondaryBackground)
         }
-        .padding(.vertical, 8)
+        .cornerRadius(20) // Match ReaderView card radius style
+        .calmShadow()
     }
 }

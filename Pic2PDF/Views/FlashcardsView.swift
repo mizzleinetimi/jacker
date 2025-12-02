@@ -15,16 +15,25 @@ struct FlashcardsView: View {
     @State private var newDeckName = ""
     @State private var importError: String?
     
+    // Grid layout
+    private let columns = [
+        GridItem(.adaptive(minimum: 160), spacing: 20)
+    ]
+    
     var body: some View {
         NavigationStack {
-            Group {
+            ZStack {
+                Theme.background
+                    .ignoresSafeArea()
+                
                 if manager.decks.isEmpty {
                     emptyState
                 } else {
-                    decksList
+                    decksGrid
                 }
             }
             .navigationTitle("Flashcards")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
@@ -36,7 +45,9 @@ struct FlashcardsView: View {
                         }
                     } label: {
                         Image(systemName: "plus.circle.fill")
-                            .font(.title2)
+                            .font(.system(size: 28))
+                            .foregroundColor(Theme.accent)
+                            .symbolRenderingMode(.hierarchical)
                     }
                 }
             }
@@ -66,77 +77,105 @@ struct FlashcardsView: View {
     }
     
     private var emptyState: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "rectangle.stack")
-                .font(.system(size: 60))
-                .foregroundColor(.secondary)
+        VStack(spacing: 24) {
+            Spacer()
             
-            Text("No Flashcard Decks")
-                .font(.title2)
-                .fontWeight(.semibold)
+            ZStack {
+                Circle()
+                    .fill(Theme.secondaryBackground)
+                    .frame(width: 120, height: 120)
+                
+                Image(systemName: "rectangle.stack.fill")
+                    .font(.system(size: 50))
+                    .foregroundColor(Theme.accent.opacity(0.8))
+            }
+            .calmShadow()
             
-            Text("Create a deck or import from CSV/JSON")
-                .foregroundColor(.secondary)
+            VStack(spacing: 8) {
+                Text("No Flashcard Decks")
+                    .font(Theme.uiFont(size: 22, weight: .bold))
+                    .foregroundColor(Theme.text)
+                
+                Text("Create a deck or import from CSV/JSON to start studying")
+                    .font(Theme.uiFont(size: 16))
+                    .foregroundColor(Theme.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            }
             
             HStack(spacing: 16) {
                 Button(action: { showingCreateDeck = true }) {
                     Label("Create", systemImage: "plus")
-                        .padding(.horizontal, 20)
+                        .font(Theme.uiFont(size: 16, weight: .medium))
+                        .padding(.horizontal, 24)
                         .padding(.vertical, 12)
-                        .background(Color.blue)
+                        .background(Theme.accent)
                         .foregroundColor(.white)
-                        .cornerRadius(10)
+                        .cornerRadius(24)
+                        .calmShadow()
                 }
                 
                 Button(action: { showingImport = true }) {
                     Label("Import", systemImage: "square.and.arrow.down")
-                        .padding(.horizontal, 20)
+                        .font(Theme.uiFont(size: 16, weight: .medium))
+                        .padding(.horizontal, 24)
                         .padding(.vertical, 12)
-                        .background(Color(.systemGray5))
-                        .foregroundColor(.primary)
-                        .cornerRadius(10)
+                        .background(Theme.secondaryBackground)
+                        .foregroundColor(Theme.text)
+                        .cornerRadius(24)
+                        .calmShadow()
                 }
             }
+            .padding(.top, 16)
+            
+            Spacer()
         }
-        .padding()
     }
     
-    private var decksList: some View {
-        List {
-            // Summary header
-            Section {
+    private var decksGrid: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                // Summary Header
                 HStack {
-                    VStack(alignment: .leading) {
-                        Text("\(manager.totalDueCards) cards due")
-                            .font(.headline)
-                        Text("\(manager.decks.count) decks")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Overview")
+                            .font(Theme.uiFont(size: 14, weight: .bold))
+                            .foregroundColor(Theme.secondaryText)
+                            .textCase(.uppercase)
+                        
+                        HStack(spacing: 16) {
+                            Label("\(manager.totalDueCards) Due", systemImage: "clock.fill")
+                                .foregroundColor(.orange)
+                                .font(Theme.uiFont(size: 16, weight: .medium))
+                            
+                            Label("\(manager.decks.count) Decks", systemImage: "rectangle.stack.fill")
+                                .foregroundColor(Theme.text)
+                                .font(Theme.uiFont(size: 16, weight: .medium))
+                        }
                     }
                     Spacer()
-                    if manager.totalDueCards > 0 {
-                        Image(systemName: "flame.fill")
-                            .foregroundColor(.orange)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 10)
+                
+                // Grid
+                LazyVGrid(columns: columns, spacing: 20) {
+                    ForEach(manager.decks) { deck in
+                        NavigationLink(destination: DeckDetailView(deck: deck)) {
+                            DeckCard(deck: deck)
+                        }
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                manager.deleteDeck(deck)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
             }
-            
-            // Decks
-            Section("Your Decks") {
-                ForEach(manager.decks) { deck in
-                    NavigationLink(destination: DeckDetailView(deck: deck)) {
-                        DeckRow(deck: deck)
-                    }
-                }
-                .onDelete(perform: deleteDecks)
-            }
-        }
-    }
-    
-    private func deleteDecks(at offsets: IndexSet) {
-        for index in offsets {
-            manager.deleteDeck(manager.decks[index])
         }
     }
     
@@ -171,39 +210,73 @@ struct FlashcardsView: View {
     }
 }
 
-struct DeckRow: View {
+struct DeckCard: View {
     let deck: FlashcardDeck
     
     var body: some View {
-        HStack {
+        VStack(alignment: .leading, spacing: 12) {
+            // Icon & Badge
+            HStack {
+                ZStack {
+                    Circle()
+                        .fill(Color.blue.opacity(0.1))
+                        .frame(width: 40, height: 40)
+                    
+                    Image(systemName: "rectangle.stack.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.blue)
+                }
+                
+                Spacer()
+                
+                if deck.dueCards > 0 {
+                    Text("\(deck.dueCards)")
+                        .font(Theme.uiFont(size: 12, weight: .bold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.orange)
+                        .foregroundColor(.white)
+                        .clipShape(Capsule())
+                }
+            }
+            
+            // Info
             VStack(alignment: .leading, spacing: 4) {
                 Text(deck.name)
-                    .font(.headline)
+                    .font(Theme.uiFont(size: 16, weight: .bold))
+                    .foregroundColor(Theme.text)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
                 
-                HStack(spacing: 12) {
-                    Label("\(deck.totalCards)", systemImage: "rectangle.stack")
-                    if deck.dueCards > 0 {
-                        Label("\(deck.dueCards) due", systemImage: "clock")
-                            .foregroundColor(.orange)
+                Text("\(deck.totalCards) cards")
+                    .font(Theme.uiFont(size: 12))
+                    .foregroundColor(Theme.secondaryText)
+            }
+            
+            Spacer(minLength: 0)
+            
+            // Progress Bar (Visual flair)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.gray.opacity(0.1))
+                        .frame(height: 4)
+                    
+                    // Show some progress if there are cards, just for visuals
+                    if deck.totalCards > 0 {
+                        let progress = max(0.1, Double(deck.totalCards - deck.dueCards) / Double(deck.totalCards))
+                        Capsule()
+                            .fill(Color.blue.opacity(0.6))
+                            .frame(width: geo.size.width * progress, height: 4)
                     }
                 }
-                .font(.caption)
-                .foregroundColor(.secondary)
             }
-            
-            Spacer()
-            
-            if deck.dueCards > 0 {
-                Text("\(deck.dueCards)")
-                    .font(.caption)
-                    .fontWeight(.bold)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.orange)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-            }
+            .frame(height: 4)
         }
-        .padding(.vertical, 4)
+        .padding(16)
+        .frame(height: 160)
+        .background(Theme.secondaryBackground)
+        .cornerRadius(20)
+        .calmShadow()
     }
 }

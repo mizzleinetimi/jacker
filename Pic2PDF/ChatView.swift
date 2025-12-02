@@ -30,8 +30,8 @@ struct ChatView: View {
     @FocusState private var isInputFocused: Bool
     
     private var availableTextModels: [ModelIdentifier] {
-        // Only show text-only models that are downloaded
-        [.gemma270M, .gemma1B].filter { downloadManager.isModelDownloaded($0) }
+        // Show all models that are downloaded
+        ModelIdentifier.allCases.filter { downloadManager.isModelDownloaded($0) }
     }
     
     var body: some View {

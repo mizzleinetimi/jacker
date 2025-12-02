@@ -31,20 +31,13 @@ struct ContentView: View {
                         Label("Flashcards", systemImage: "rectangle.stack")
                     }
                     .tag(1)
-
-                // Chat Tab - Ask questions about content
-                ChatView()
-                    .tabItem {
-                        Label("Chat", systemImage: "bubble.left.and.bubble.right")
-                    }
-                    .tag(2)
                 
                 // Settings Tab
                 SettingsView()
                     .tabItem {
                         Label("Settings", systemImage: "gearshape")
                     }
-                    .tag(3)
+                    .tag(2)
             }
             
             // Model loading overlay (fades screen until model is ready)

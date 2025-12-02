@@ -33,12 +33,15 @@ class TextSimplifier {
     private func buildSimplificationPrompt(_ text: String) -> String {
         return """
         <start_of_turn>user
-        Rewrite the passage using simpler words. Keep it the same length or shorter.
-        RULES:
-        - Output ONLY the rewritten text (no explanations, no introductions, no bullet labels).
-        - Do NOT start with phrases like "Here's an alternative" or "Simplified version".
-        - Do NOT wrap the answer in quotes or markdown code fences.
+        Rewrite the following text using simpler words and shorter sentences.
+        
+        CRITICAL RULES:
+        1. Output ONLY the simplified text.
+        2. Do NOT say "Sure", "Here is", "The text", or any intro.
+        3. Do NOT use quotes or markdown.
+        4. Just start writing the simplified text immediately.
 
+        Text to simplify:
         \(text)
         <end_of_turn>
         <start_of_turn>model
@@ -48,15 +51,21 @@ class TextSimplifier {
     private func parseSimplificationResponse(_ response: String, originalText: String) -> (simplified: String, takeaways: [String]) {
         var simplified = response.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Trim wrapping quotes or leading bullet characters
+        // Log raw response for debugging
+        NSLog("[TextSimplifier] Raw response: \(simplified.prefix(100))...")
+        
+        // Trim wrapping quotes
         simplified = simplified.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”' "))
         
-        // Strip common LLM preambles using regex (handles bullets + punctuation)
-        let preamblePattern = #"^\s*(?:[-–—•*]\s*)?(?:here(?:'s| is)\s+(?:an|a|the)\s+(?:alternative|simpler version|rewritten(?: text)?|summary)|simplified version|rewritten|alternative)\s*:?\s*"#
+        // Aggressive preamble removal
+        // Matches: "Sure!", "Okay,", "Here is the text:", "Simplified version:", etc.
+        let preamblePattern = #"^\s*(?:Sure|Okay|Certainly|Here(?:'s| is)|The (?:simplified|rewritten)|Simplified|Rewritten).{0,50}[:\n]\s*"#
+        
         if let range = simplified.range(of: preamblePattern, options: [.regularExpression, .caseInsensitive]) {
             simplified.removeSubrange(range)
-            simplified = simplified.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”' ").union(.whitespacesAndNewlines))
         }
+        
+        simplified = simplified.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”' ").union(.whitespacesAndNewlines))
         
         // If empty, return original
         if simplified.isEmpty {

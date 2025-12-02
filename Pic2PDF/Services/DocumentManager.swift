@@ -174,8 +174,8 @@ class DocumentManager: ObservableObject {
     // MARK: - Card Simplification
     
     /// Simplify a card's text (called lazily when user views the card)
-    func simplifyCard(_ card: Card) async {
-        guard card.status == .raw else { return }
+    func simplifyCard(_ card: Card, force: Bool = false) async {
+        guard card.status == .raw || (force && card.status == .failed) else { return }
         
         card.status = .processing
         let originalText = card.originalText
