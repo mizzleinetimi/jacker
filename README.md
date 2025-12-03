@@ -63,14 +63,16 @@ On top of that, internet data is expensive and unreliable. Cloud-based AI tools 
 
 ### On-Device AI Models
 
-| Model | Size | RAM Required | Best For |
-|-------|------|--------------|----------|
-| **Gemma 3N 2B** ⭐ | ~2.9GB | 4GB+ | Recommended - best balance of quality and speed |
-| **Gemma 3N 4B** | ~4GB | 6GB+ | Higher quality, slower inference |
-| **Gemma 3 1B** | ~600MB | 3GB+ | Good performance on most devices |
-| **Gemma 3 270M** | ~200MB | 2GB+ | Lightweight, for older devices |
+| Model | Size | RAM | HuggingFace Token | Best For |
+|-------|------|-----|-------------------|----------|
+| **Gemma 3N 2B** ⭐ | ~2.9GB | 4GB+ | ❌ No | Recommended - best balance of quality and speed |
+| **Gemma 3N 4B** | ~4GB | 6GB+ | ❌ No | Higher quality, slower inference |
+| **Gemma 3 1B** | ~600MB | 3GB+ | ✅ Yes | Good performance on most devices |
+| **Gemma 3 270M** | ~290MB | 2GB+ | ✅ Yes | Lightweight, for older devices |
 
 ⭐ = Recommended
+
+**Note:** Gemma 1B and 270M models are hosted on HuggingFace and require a free access token. Get one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) and enter it in Settings before downloading.
 
 ---
 
@@ -118,8 +120,9 @@ open Pic2PDF.xcworkspace
 ### First Run
 1. Build and run the app
 2. Navigate to Settings
-3. Download your preferred AI model (Gemma 1B recommended)
-4. Start importing documents or creating flashcards
+3. For Gemma 1B/270M: Enter your HuggingFace token first (expand "HuggingFace Token" section)
+4. Download your preferred AI model (Gemma 2B recommended - no token needed)
+5. Start importing documents or creating flashcards
 
 ---
 
