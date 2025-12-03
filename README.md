@@ -65,8 +65,8 @@ On top of that, internet data is expensive and unreliable. Cloud-based AI tools 
 
 | Model | Size | RAM Required | Best For |
 |-------|------|--------------|----------|
-| **Gemma 3N 2B** ⭐ | ~500MB | 4GB+ | Recommended - best balance of quality and speed |
-| **Gemma 3N 4B** | ~900MB | 6GB+ | Higher quality, slower inference |
+| **Gemma 3N 2B** ⭐ | ~2.9GB | 4GB+ | Recommended - best balance of quality and speed |
+| **Gemma 3N 4B** | ~4GB | 6GB+ | Higher quality, slower inference |
 | **Gemma 3 1B** | ~600MB | 3GB+ | Good performance on most devices |
 | **Gemma 3 270M** | ~200MB | 2GB+ | Lightweight, for older devices |
 
@@ -102,7 +102,7 @@ Fallback to string similarity with semantic bonuses ensures grading works even i
 
 ### Requirements
 - iOS 17.0+
-- ~500MB-1GB storage for AI models
+- ~3-4GB storage for AI models
 - 4GB+ RAM recommended (for Gemma 2B)
 - iPhone with A12 chip or newer recommended
 
